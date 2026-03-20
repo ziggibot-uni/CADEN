@@ -142,6 +142,8 @@ export function TodayPanel({ items, onItemCompleted, onReorder, onClearCompleted
     dragId.current = item.id;
     setIsDragging(true);
     e.dataTransfer.effectAllowed = "move";
+    // Required by webkit/Firefox — drag won't initiate without at least one data item
+    e.dataTransfer.setData("text/plain", item.id);
   }
 
   function handleDragOver(e: React.DragEvent, index: number) {
@@ -199,55 +201,95 @@ export function TodayPanel({ items, onItemCompleted, onReorder, onClearCompleted
             })}
           </div>
         </div>
-        {done.length > 0 && (
-          <button
-            onClick={onClearCompleted}
-            className="text-[10px] font-mono text-text-dim hover:text-accent transition-colors mt-1 cursor-pointer"
-            title="Remove completed tasks from view"
-          >
-            clear {done.length} done
-          </button>
+        {items.length > 0 && (
+          <div className="text-[11px] font-mono text-text-dim mt-1 text-right">
+            {done.length}/{items.length}
+            <span className="block text-[10px] opacity-60">done</span>
+          </div>
         )}
       </div>
 
       {/* Task list */}
       <div className="flex-1 overflow-y-auto">
-        {pending.length === 0 ? (
+        {pending.length === 0 && done.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full text-center px-6 gap-2">
-            <div className="text-text-dim text-sm">
-              {done.length > 0 ? `All ${done.length} tasks done.` : "Nothing scheduled."}
+            <div className="text-text-dim text-sm">Nothing scheduled.</div>
+            <div className="text-text-dim text-xs">
+              Sync your calendar and tasks to get started.
             </div>
-            {done.length === 0 && (
-              <div className="text-text-dim text-xs">
-                Sync your calendar and tasks to get started.
-              </div>
-            )}
           </div>
         ) : (
           <>
-            {pending.map((item, idx) => (
-              <PlanRow
-                key={item.id}
-                item={item}
-                onComplete={onItemCompleted}
-                onDragStart={(e) => handleDragStart(e, item)}
-                onDragOver={(e) => handleDragOver(e, idx)}
-                onDrop={(e) => handleDrop(e, idx)}
-                onDragEnd={handleDragEnd}
-                isDragOver={dragOverIndex === idx}
-              />
-            ))}
-            {/* Drop zone at end — lets user drag an item to the last position */}
-            {isDragging && (
-              <div
-                className={`h-10 mx-4 my-1 border-2 border-dashed rounded transition-colors ${
-                  dragOverIndex === pending.length
-                    ? "border-accent bg-accent/5"
-                    : "border-surface-3"
-                }`}
-                onDragOver={(e) => { e.preventDefault(); setDragOverIndex(pending.length); }}
-                onDrop={(e) => handleDrop(e, pending.length)}
-              />
+            {/* Pending tasks */}
+            {pending.length === 0 ? (
+              <div className="px-4 py-4 text-sm text-text-dim text-center">
+                All tasks done for today.
+              </div>
+            ) : (
+              <>
+                {pending.map((item, idx) => (
+                  <PlanRow
+                    key={item.id}
+                    item={item}
+                    onComplete={onItemCompleted}
+                    onDragStart={(e) => handleDragStart(e, item)}
+                    onDragOver={(e) => handleDragOver(e, idx)}
+                    onDrop={(e) => handleDrop(e, idx)}
+                    onDragEnd={handleDragEnd}
+                    isDragOver={dragOverIndex === idx}
+                  />
+                ))}
+                {/* Drop zone at end */}
+                {isDragging && (
+                  <div
+                    className={`h-10 mx-4 my-1 border-2 border-dashed rounded transition-colors ${
+                      dragOverIndex === pending.length
+                        ? "border-accent bg-accent/5"
+                        : "border-surface-3"
+                    }`}
+                    onDragOver={(e) => { e.preventDefault(); setDragOverIndex(pending.length); }}
+                    onDrop={(e) => handleDrop(e, pending.length)}
+                  />
+                )}
+              </>
+            )}
+
+            {/* Completed section */}
+            {done.length > 0 && (
+              <div className="border-t border-surface-2 mt-1">
+                <div className="px-4 py-2 flex items-center justify-between">
+                  <span className="text-[10px] font-mono uppercase tracking-widest text-text-dim">
+                    Done · {done.length}
+                  </span>
+                  <button
+                    onClick={onClearCompleted}
+                    className="text-[10px] font-mono text-text-dim hover:text-accent transition-colors cursor-pointer"
+                    title="Remove completed tasks from view"
+                  >
+                    clear
+                  </button>
+                </div>
+                {done.map((item) => (
+                  <div
+                    key={item.id}
+                    className="flex items-center gap-2.5 px-4 py-2 border-b border-surface-2 opacity-45"
+                  >
+                    <span className="text-accent text-xs flex-shrink-0">✓</span>
+                    <span className="text-sm text-text-dim line-through truncate flex-1 min-w-0">
+                      {item.title}
+                    </span>
+                    <span className="text-[10px] font-mono text-text-dim flex-shrink-0">
+                      {item.completed_at
+                        ? new Date(item.completed_at).toLocaleTimeString([], {
+                            hour: "2-digit",
+                            minute: "2-digit",
+                            hour12: false,
+                          })
+                        : ""}
+                    </span>
+                  </div>
+                ))}
+              </div>
             )}
           </>
         )}
