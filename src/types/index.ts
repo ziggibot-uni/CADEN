@@ -62,6 +62,7 @@ export interface AppSettings {
   ollama_model: string;
   system_prompt: string;
   task_duration_minutes: number;
+  font_scale: number;
   setup_complete: boolean;
 }
 

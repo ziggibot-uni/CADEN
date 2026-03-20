@@ -84,3 +84,12 @@ CREATE TABLE IF NOT EXISTS patterns (
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_patterns_type_time
     ON patterns(task_type, time_of_day);
+
+-- ─── User corrections / preference log ──────────────────────────────────────
+CREATE TABLE IF NOT EXISTS user_corrections (
+    id              TEXT PRIMARY KEY NOT NULL,
+    correction_type TEXT NOT NULL,    -- 'task_reorder', 'preference', etc.
+    description     TEXT NOT NULL,
+    data            TEXT,             -- JSON payload
+    timestamp       TEXT NOT NULL
+);

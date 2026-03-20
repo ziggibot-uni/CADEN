@@ -16,6 +16,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   ollama_model: "llama3.1:8b",
   system_prompt: "",
   task_duration_minutes: 45,
+  font_scale: 1.0,
   setup_complete: false,
 };
 
@@ -122,6 +123,10 @@ export function useAppState() {
     );
   }
 
+  function reorderItems(newOrder: PlanItem[]) {
+    setPlanItems(newOrder);
+  }
+
   // Build context for Ollama
   const plannerContext: PlannerContext = {
     date: new Date().toISOString(),
@@ -144,5 +149,6 @@ export function useAppState() {
     checkOllama,
     sync,
     markItemComplete,
+    reorderItems,
   };
 }

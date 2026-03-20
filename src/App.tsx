@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { TodayPanel } from "./components/TodayPanel";
 import { ChatPanel } from "./components/ChatPanel";
 import { UpcomingPanel } from "./components/UpcomingPanel";
@@ -20,7 +20,16 @@ export default function App() {
     checkOllama,
     sync,
     markItemComplete,
+    reorderItems,
   } = useAppState();
+
+  // Apply font scale to root element whenever it changes
+  useEffect(() => {
+    document.documentElement.style.setProperty(
+      "--font-scale",
+      String(settings.font_scale ?? 1.0)
+    );
+  }, [settings.font_scale]);
 
   const [showSettings, setShowSettings] = useState(false);
 
@@ -39,7 +48,7 @@ export default function App() {
       <div className="flex flex-1 overflow-hidden">
         {/* Left — Today's Plan (30%) */}
         <div className="w-[30%] flex flex-col overflow-hidden">
-          <TodayPanel items={planItems} onItemCompleted={markItemComplete} />
+          <TodayPanel items={planItems} onItemCompleted={markItemComplete} onReorder={reorderItems} />
         </div>
 
         {/* Center — CADEN Chat (50%) */}

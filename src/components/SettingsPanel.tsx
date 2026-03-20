@@ -237,6 +237,40 @@ export function SettingsPanel({ settings, onClose, onSettingsChange }: Props) {
             </div>
           </section>
 
+          {/* Display */}
+          <section>
+            <div className="text-[11px] font-mono uppercase tracking-widest text-text-dim mb-3">
+              Display
+            </div>
+            <label className="flex flex-col gap-2">
+              <div className="flex items-center justify-between">
+                <span className="text-xs text-text-muted">Text size</span>
+                <span className="text-xs font-mono text-text-dim">
+                  {Math.round((form.font_scale ?? 1.0) * 100)}%
+                </span>
+              </div>
+              <input
+                type="range"
+                min={0.8}
+                max={1.6}
+                step={0.05}
+                className="w-full accent-accent"
+                value={form.font_scale ?? 1.0}
+                onChange={(e) => {
+                  const scale = parseFloat(e.target.value);
+                  setForm((f) => ({ ...f, font_scale: scale }));
+                  // Live preview
+                  document.documentElement.style.setProperty("--font-scale", String(scale));
+                }}
+              />
+              <div className="flex justify-between text-[10px] text-text-dim font-mono">
+                <span>80%</span>
+                <span>100%</span>
+                <span>160%</span>
+              </div>
+            </label>
+          </section>
+
           {/* Planner */}
           <section>
             <div className="text-[11px] font-mono uppercase tracking-widest text-text-dim mb-3">

@@ -34,6 +34,11 @@ pub async fn load_settings(pool: &SqlitePool) -> Result<AppSettings> {
                     s.task_duration_minutes = v.parse().unwrap_or(45);
                 }
             }
+            "font_scale" => {
+                if let Some(v) = v {
+                    s.font_scale = v.parse().unwrap_or(1.0);
+                }
+            }
             "setup_complete" => s.setup_complete = v.as_deref() == Some("true"),
             _ => {}
         }
@@ -63,8 +68,43 @@ pub async fn save_settings(pool: &SqlitePool, settings: &AppSettings) -> Result<
         &settings.task_duration_minutes.to_string(),
     )
     .await?;
+    set_setting(pool, "font_scale", &settings.font_scale.to_string()).await?;
     set_setting(pool, "setup_complete", &settings.setup_complete.to_string()).await?;
     Ok(())
+}
+
+// ─── User corrections ─────────────────────────────────────────────────────────
+
+pub async fn record_correction(
+    pool: &SqlitePool,
+    correction_type: &str,
+    description: &str,
+    data: Option<&str>,
+) -> Result<()> {
+    let now = Utc::now().to_rfc3339();
+    sqlx::query(
+        "INSERT INTO user_corrections (id, correction_type, description, data, timestamp)
+         VALUES (?, ?, ?, ?, ?)",
+    )
+    .bind(generate_id())
+    .bind(correction_type)
+    .bind(description)
+    .bind(data)
+    .bind(&now)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn get_recent_corrections(pool: &SqlitePool, limit: i64) -> Result<Vec<(String, String, Option<String>)>> {
+    let rows: Vec<(String, String, Option<String>)> = sqlx::query_as(
+        "SELECT correction_type, description, data FROM user_corrections
+         ORDER BY timestamp DESC LIMIT ?",
+    )
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
 }
 
 // ─── Plan items ───────────────────────────────────────────────────────────────

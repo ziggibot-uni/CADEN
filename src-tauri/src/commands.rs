@@ -210,6 +210,19 @@ pub async fn mark_plan_item_complete(
 }
 
 #[tauri::command]
+pub async fn record_correction(
+    correction_type: String,
+    description: String,
+    data: Option<String>,
+    state: State<'_, SharedState>,
+) -> Result<(), String> {
+    let s = state.lock().await;
+    ops::record_correction(&s.pool, &correction_type, &description, data.as_deref())
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub async fn sync_all(state: State<'_, SharedState>) -> Result<(), String> {
     let (pool, google_tokens, moodle_client) = {
         let s = state.lock().await;

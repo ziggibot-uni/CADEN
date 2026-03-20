@@ -103,6 +103,7 @@ pub struct AppSettings {
     pub ollama_model: String,
     pub system_prompt: String,
     pub task_duration_minutes: i64,
+    pub font_scale: f64,
     pub setup_complete: bool,
 }
 
@@ -115,6 +116,7 @@ impl Default for AppSettings {
             ollama_model: "llama3.1:8b".to_string(),
             system_prompt: crate::ollama::DEFAULT_SYSTEM_PROMPT.to_string(),
             task_duration_minutes: 45,
+            font_scale: 1.0,
             setup_complete: false,
         }
     }

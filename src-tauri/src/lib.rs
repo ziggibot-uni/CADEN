@@ -78,6 +78,7 @@ pub fn run() {
             commands::get_today_plan,
             commands::get_upcoming_items,
             commands::mark_plan_item_complete,
+            commands::record_correction,
             commands::sync_all,
         ])
         .run(tauri::generate_context!())
