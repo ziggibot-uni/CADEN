@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" fill="#0f0f0f"/>
+  <!-- Diamond reticle -->
+  <polygon points="256,80 400,256 256,432 112,256" fill="none" stroke="#4a9b8e" stroke-width="24"/>
+  <!-- Center crosshair -->
+  <line x1="256" y1="200" x2="256" y2="312" stroke="#4a9b8e" stroke-width="16"/>
+  <line x1="200" y1="256" x2="312" y2="256" stroke="#4a9b8e" stroke-width="16"/>
+  <!-- Center dot -->
+  <circle cx="256" cy="256" r="12" fill="#4a9b8e"/>
+</svg>

@@ -1,0 +1,13 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Default capability for CADEN",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "shell:default",
+    "store:default",
+    "http:default",
+    "opener:default"
+  ]
+}

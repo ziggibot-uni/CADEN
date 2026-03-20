@@ -1,0 +1,141 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    box-sizing: border-box;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+    background-color: #0f0f0f;
+    color: #c8c8c8;
+    font-family: "Inter", system-ui, sans-serif;
+    font-size: 14px;
+    line-height: 1.6;
+  }
+
+  /* Scrollbar — minimal, dark */
+  ::-webkit-scrollbar {
+    width: 4px;
+    height: 4px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: #272727;
+    border-radius: 2px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: #3a3a3a;
+  }
+
+  /* Remove default button/input chrome */
+  button,
+  input,
+  textarea {
+    outline: none;
+    border: none;
+    background: none;
+    color: inherit;
+    font-family: inherit;
+    font-size: inherit;
+  }
+}
+
+@layer components {
+  /* Panel dividers */
+  .panel-divider {
+    @apply border-r border-[#1e1e1e];
+  }
+
+  /* Source tag pills */
+  .source-tag {
+    @apply text-[10px] font-mono uppercase tracking-wider px-1.5 py-0.5 rounded;
+  }
+  .source-tag-calendar {
+    @apply source-tag bg-[#1a2a3a] text-[#5a8ab5];
+  }
+  .source-tag-tasks {
+    @apply source-tag bg-[#1a2d2a] text-[#4a9b8e];
+  }
+  .source-tag-moodle {
+    @apply source-tag bg-[#2a1a2d] text-[#8a5ab5];
+  }
+
+  /* Urgency dot */
+  .urgency-dot {
+    @apply w-1.5 h-1.5 rounded-full flex-shrink-0;
+  }
+  .urgency-high {
+    @apply bg-[#c0392b];
+  }
+  .urgency-med {
+    @apply bg-[#b5842a];
+  }
+  .urgency-low {
+    @apply bg-[#2d6b61];
+  }
+
+  /* Chat message */
+  .chat-msg-user {
+    @apply text-[#c8c8c8] self-end;
+  }
+  .chat-msg-assistant {
+    @apply text-[#9ab8b5] self-start;
+  }
+
+  /* Subtle button */
+  .btn-ghost {
+    @apply px-3 py-1.5 rounded text-text-muted hover:text-text hover:bg-surface-2
+           transition-colors duration-150 cursor-pointer;
+  }
+
+  /* Primary button */
+  .btn-primary {
+    @apply px-4 py-2 rounded bg-accent-dim hover:bg-accent text-[#c8c8c8]
+           transition-colors duration-150 cursor-pointer;
+  }
+
+  /* Input field */
+  .input-field {
+    @apply w-full bg-surface-2 border border-surface-3 rounded px-3 py-2
+           text-text placeholder:text-text-dim focus:border-accent-dim
+           transition-colors duration-150;
+  }
+}
+
+/* Thinking dot animation */
+@keyframes thinkPulse {
+  0%, 100% { opacity: 0.3; transform: scale(0.8); }
+  50%       { opacity: 1;   transform: scale(1.1); }
+}
+
+.think-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background-color: #4a9b8e;
+  animation: thinkPulse 1.6s ease-in-out infinite;
+}
+
+.think-dot:nth-child(2) { animation-delay: 0.3s; }
+.think-dot:nth-child(3) { animation-delay: 0.6s; }
+
+/* Fade-in for new messages */
+@keyframes fadeInUp {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.msg-appear {
+  animation: fadeInUp 0.2s ease-out;
+}
