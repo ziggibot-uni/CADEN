@@ -11,6 +11,29 @@ use crate::SharedState;
 // ─── Settings ────────────────────────────────────────────────────────────────
 
 #[tauri::command]
+pub async fn get_setting_value(
+    key: String,
+    state: State<'_, SharedState>,
+) -> Result<Option<String>, String> {
+    let s = state.lock().await;
+    crate::db::get_setting(&s.pool, &key)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn set_setting_value(
+    key: String,
+    value: String,
+    state: State<'_, SharedState>,
+) -> Result<(), String> {
+    let s = state.lock().await;
+    crate::db::set_setting(&s.pool, &key, &value)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub async fn get_settings(state: State<'_, SharedState>) -> Result<AppSettings, String> {
     let s = state.lock().await;
     ops::load_settings(&s.pool)

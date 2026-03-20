@@ -21,14 +21,31 @@ Rules:
 
 export function SettingsPanel({ settings, onClose, onSettingsChange }: Props) {
   const [form, setForm] = useState<AppSettings>(settings);
+  const [googleClientId, setGoogleClientId] = useState("");
+  const [googleClientSecret, setGoogleClientSecret] = useState("");
   const [saving, setSaving] = useState(false);
   const [testingMoodle, setTestingMoodle] = useState(false);
   const [moodleResult, setMoodleResult] = useState<string | null>(null);
+
+  // Load existing Google credentials on mount
+  useState(() => {
+    invoke<string | null>("get_setting_value", { key: "google_client_id" })
+      .then((v) => { if (v) setGoogleClientId(v); })
+      .catch(() => {});
+    invoke<string | null>("get_setting_value", { key: "google_client_secret" })
+      .then((v) => { if (v) setGoogleClientSecret(v); })
+      .catch(() => {});
+  });
 
   async function handleSave() {
     setSaving(true);
     try {
       await invoke("save_settings", { settings: form });
+      // Save Google credentials separately (not in the main AppSettings struct)
+      if (googleClientId)
+        await invoke("set_setting_value", { key: "google_client_id", value: googleClientId });
+      if (googleClientSecret)
+        await invoke("set_setting_value", { key: "google_client_secret", value: googleClientSecret });
       onSettingsChange(form);
       onClose();
     } catch (err) {
@@ -117,18 +134,54 @@ export function SettingsPanel({ settings, onClose, onSettingsChange }: Props) {
             <div className="text-[11px] font-mono uppercase tracking-widest text-text-dim mb-3">
               Google Account
             </div>
-            <div className="flex items-center gap-3">
-              <span className="text-sm text-text-muted">
-                {settings.google_connected ? "Connected" : "Not connected"}
-              </span>
-              <span
-                className={`w-1.5 h-1.5 rounded-full ${
-                  settings.google_connected ? "bg-[#2d6b61]" : "bg-[#c0392b]"
-                }`}
-              />
-              <button className="btn-ghost text-xs ml-auto" onClick={handleGoogleConnect}>
-                {settings.google_connected ? "Reconnect" : "Connect"}
-              </button>
+            <div className="flex flex-col gap-3">
+              <label className="flex flex-col gap-1">
+                <span className="text-xs text-text-muted">
+                  OAuth Client ID{" "}
+                  <a
+                    className="text-accent-DEFAULT underline"
+                    href="https://console.cloud.google.com/apis/credentials"
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    (Google Cloud Console)
+                  </a>
+                </span>
+                <input
+                  className="input-field font-mono text-xs"
+                  value={googleClientId}
+                  onChange={(e) => setGoogleClientId(e.target.value)}
+                  placeholder="123456789-abc.apps.googleusercontent.com"
+                />
+              </label>
+              <label className="flex flex-col gap-1">
+                <span className="text-xs text-text-muted">OAuth Client Secret</span>
+                <input
+                  type="password"
+                  className="input-field font-mono text-xs"
+                  value={googleClientSecret}
+                  onChange={(e) => setGoogleClientSecret(e.target.value)}
+                  placeholder="GOCSPX-••••••••••••"
+                />
+              </label>
+              <div className="text-[10px] text-text-dim leading-relaxed">
+                Enable Calendar API and Tasks API in your Google Cloud project.
+                Set the redirect URI to{" "}
+                <span className="font-mono">http://localhost:42813/callback</span>
+              </div>
+              <div className="flex items-center gap-3">
+                <span
+                  className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
+                    settings.google_connected ? "bg-[#2d6b61]" : "bg-[#4a4a4a]"
+                  }`}
+                />
+                <span className="text-xs text-text-muted">
+                  {settings.google_connected ? "Connected" : "Not connected"}
+                </span>
+                <button className="btn-ghost text-xs ml-auto" onClick={handleGoogleConnect}>
+                  {settings.google_connected ? "Reconnect" : "Connect"}
+                </button>
+              </div>
             </div>
           </section>
 

@@ -63,6 +63,8 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            commands::get_setting_value,
+            commands::set_setting_value,
             commands::get_settings,
             commands::save_settings,
             commands::mark_setup_complete,

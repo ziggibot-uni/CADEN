@@ -45,7 +45,7 @@ export function ChatPanel({ ollamaStatus, context, onRetryOllama }: Props) {
   const [streamingContent, setStreamingContent] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  const unlistenRef = useRef<(() => void) | null>(null);
+  const unlistenRef = useRef<Array<() => void>>([]);
 
   // Scroll to bottom when messages change
   useEffect(() => {
@@ -56,47 +56,51 @@ export function ChatPanel({ ollamaStatus, context, onRetryOllama }: Props) {
   useEffect(() => {
     let active = true;
 
-    listen<string>("ollama-token", (event) => {
-      if (!active) return;
-      setStreamingContent((prev) => prev + event.payload);
-    }).then((unlisten) => {
-      unlistenRef.current = unlisten;
-    });
-
-    listen<string>("ollama-done", () => {
-      if (!active) return;
-      setStreamingContent((prev) => {
-        const content = prev;
-        if (content) {
-          const msg: ChatMessage = {
+    const setup = async () => {
+      const unlistens = await Promise.all([
+        listen<string>("ollama-token", (event) => {
+          if (!active) return;
+          setStreamingContent((prev) => prev + event.payload);
+        }),
+        listen<void>("ollama-done", () => {
+          if (!active) return;
+          setStreamingContent((prev) => {
+            const content = prev;
+            if (content) {
+              const msg: ChatMessage = {
+                id: crypto.randomUUID(),
+                role: "assistant",
+                content,
+                timestamp: new Date().toISOString(),
+              };
+              setMessages((msgs) => [...msgs, msg]);
+            }
+            return "";
+          });
+          setThinking(false);
+        }),
+        listen<string>("ollama-error", (event) => {
+          if (!active) return;
+          const errMsg: ChatMessage = {
             id: crypto.randomUUID(),
             role: "assistant",
-            content,
+            content: event.payload,
             timestamp: new Date().toISOString(),
           };
-          setMessages((msgs) => [...msgs, msg]);
-        }
-        return "";
-      });
-      setThinking(false);
-    });
+          setMessages((msgs) => [...msgs, errMsg]);
+          setStreamingContent("");
+          setThinking(false);
+        }),
+      ]);
+      unlistenRef.current = unlistens;
+    };
 
-    listen<string>("ollama-error", (event) => {
-      if (!active) return;
-      const errMsg: ChatMessage = {
-        id: crypto.randomUUID(),
-        role: "assistant",
-        content: event.payload,
-        timestamp: new Date().toISOString(),
-      };
-      setMessages((msgs) => [...msgs, errMsg]);
-      setStreamingContent("");
-      setThinking(false);
-    });
+    setup();
 
     return () => {
       active = false;
-      unlistenRef.current?.();
+      unlistenRef.current.forEach((u) => u());
+      unlistenRef.current = [];
     };
   }, []);
 
