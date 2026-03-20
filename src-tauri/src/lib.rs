@@ -2,6 +2,7 @@ use std::sync::Arc;
 use tauri::Manager;
 use tokio::sync::Mutex;
 
+pub mod calendar_agent;
 pub mod commands;
 pub mod db;
 pub mod google;
@@ -78,6 +79,7 @@ pub fn run() {
             commands::get_today_plan,
             commands::get_upcoming_items,
             commands::mark_plan_item_complete,
+            commands::clear_completed_plan_items,
             commands::record_correction,
             commands::sync_all,
         ])

@@ -13,8 +13,8 @@ const REDIRECT_PORT: u16 = 42813;
 const REDIRECT_URI: &str = "http://localhost:42813/callback";
 
 const SCOPES: &[&str] = &[
-    "https://www.googleapis.com/auth/calendar.readonly",
-    "https://www.googleapis.com/auth/tasks.readonly",
+    "https://www.googleapis.com/auth/calendar",
+    "https://www.googleapis.com/auth/tasks",
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -312,6 +312,148 @@ pub async fn fetch_tasks(access_token: &str) -> Result<Vec<GoogleTask>> {
     }
 
     Ok(tasks)
+}
+
+// ─── Calendar write API ───────────────────────────────────────────────────────
+
+pub async fn list_calendars(access_token: &str) -> Result<Vec<(String, String)>> {
+    let client = Client::new();
+    let resp = client
+        .get("https://www.googleapis.com/calendar/v3/users/me/calendarList")
+        .bearer_auth(access_token)
+        .query(&[("maxResults", "10")])
+        .send()
+        .await?
+        .json::<serde_json::Value>()
+        .await?;
+
+    let items = resp["items"].as_array().cloned().unwrap_or_default();
+    Ok(items
+        .into_iter()
+        .map(|c| {
+            let id = c["id"].as_str().unwrap_or("primary").to_string();
+            let name = c["summary"].as_str().unwrap_or("Calendar").to_string();
+            (id, name)
+        })
+        .collect())
+}
+
+pub async fn create_calendar_event(
+    access_token: &str,
+    calendar_id: &str,
+    title: &str,
+    start_iso: &str,
+    end_iso: &str,
+    description: Option<&str>,
+) -> Result<String> {
+    let client = Client::new();
+    let mut body = serde_json::json!({
+        "summary": title,
+        "start": { "dateTime": start_iso },
+        "end": { "dateTime": end_iso },
+    });
+    if let Some(desc) = description {
+        body["description"] = serde_json::Value::String(desc.to_string());
+    }
+
+    let resp = client
+        .post(format!(
+            "https://www.googleapis.com/calendar/v3/calendars/{}/events",
+            urlencoding::encode(calendar_id)
+        ))
+        .bearer_auth(access_token)
+        .json(&body)
+        .send()
+        .await?;
+
+    if !resp.status().is_success() {
+        let err = resp.text().await.unwrap_or_default();
+        return Err(anyhow!("Create event failed: {}", err));
+    }
+
+    let result: serde_json::Value = resp.json().await?;
+    Ok(result["id"].as_str().unwrap_or("").to_string())
+}
+
+pub async fn delete_calendar_event(
+    access_token: &str,
+    calendar_id: &str,
+    event_id: &str,
+) -> Result<()> {
+    let client = Client::new();
+    let resp = client
+        .delete(format!(
+            "https://www.googleapis.com/calendar/v3/calendars/{}/events/{}",
+            urlencoding::encode(calendar_id),
+            urlencoding::encode(event_id)
+        ))
+        .bearer_auth(access_token)
+        .send()
+        .await?;
+
+    if !resp.status().is_success() && resp.status().as_u16() != 204 {
+        let err = resp.text().await.unwrap_or_default();
+        return Err(anyhow!("Delete event failed: {}", err));
+    }
+    Ok(())
+}
+
+// ─── Tasks write API ──────────────────────────────────────────────────────────
+
+pub async fn get_task_lists(access_token: &str) -> Result<Vec<(String, String)>> {
+    let client = Client::new();
+    let resp = client
+        .get("https://www.googleapis.com/tasks/v1/users/@me/lists")
+        .bearer_auth(access_token)
+        .send()
+        .await?
+        .json::<serde_json::Value>()
+        .await?;
+
+    let items = resp["items"].as_array().cloned().unwrap_or_default();
+    Ok(items
+        .into_iter()
+        .map(|l| {
+            let id = l["id"].as_str().unwrap_or("@default").to_string();
+            let name = l["title"].as_str().unwrap_or("Tasks").to_string();
+            (id, name)
+        })
+        .collect())
+}
+
+pub async fn create_task(
+    access_token: &str,
+    list_id: &str,
+    title: &str,
+    due_rfc3339: Option<&str>,
+    notes: Option<&str>,
+) -> Result<String> {
+    let client = Client::new();
+    let mut body = serde_json::json!({ "title": title });
+    if let Some(due) = due_rfc3339 {
+        body["due"] = serde_json::Value::String(due.to_string());
+    }
+    if let Some(n) = notes {
+        body["notes"] = serde_json::Value::String(n.to_string());
+    }
+
+    let resp = client
+        .post(format!(
+            "https://www.googleapis.com/tasks/v1/lists/{}/tasks",
+            urlencoding::encode(list_id)
+        ))
+        .bearer_auth(access_token)
+        .json(&body)
+        .send()
+        .await?;
+
+    if !resp.status().is_success() {
+        let err = resp.text().await.unwrap_or_default();
+        return Err(anyhow!("Create task failed: {}", err));
+    }
+
+    let result: serde_json::Value = resp.json().await?;
+    Ok(result["id"].as_str().unwrap_or("").to_string())
 }
 
 // ─── PKCE helpers ─────────────────────────────────────────────────────────────

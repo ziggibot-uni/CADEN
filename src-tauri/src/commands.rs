@@ -1,5 +1,6 @@
 use tauri::{AppHandle, State};
 
+use crate::calendar_agent;
 use crate::db::models::{AppSettings, PlanItem, UpcomingItem};
 use crate::db::{ops, set_setting};
 use crate::google;
@@ -105,17 +106,59 @@ pub async fn chat_with_ollama(
     state: State<'_, SharedState>,
     app: AppHandle,
 ) -> Result<(), String> {
-    let (model, system_prompt) = {
+    let (pool, model, system_prompt, google_tokens) = {
         let s = state.lock().await;
         let settings = ops::load_settings(&s.pool)
             .await
             .map_err(|e| e.to_string())?;
-        (settings.ollama_model, settings.system_prompt)
+        (
+            s.pool.clone(),
+            settings.ollama_model,
+            settings.system_prompt,
+            s.google_tokens.clone(),
+        )
     };
 
+    // Pre-fetch a fresh Google access token if this looks like a calendar request.
+    // The framework handles routing; the LLM only does simple slot-filling.
+    let calendar_token = if calendar_agent::is_calendar_request(&message) {
+        if let Some(tokens) = google_tokens {
+            ensure_fresh_token(&pool, tokens).await.ok()
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    let date = context.date.clone();
+
     tauri::async_runtime::spawn(async move {
-        if let Err(e) = ollama::chat_streaming(app, message, history, context, model, system_prompt)
+        // If we have a calendar token and a calendar keyword, try the agent first.
+        if let Some(access_token) = calendar_token {
+            match calendar_agent::handle_request(
+                app.clone(),
+                message.clone(),
+                access_token,
+                model.clone(),
+                date,
+            )
             .await
+            {
+                Ok(()) => return, // calendar agent handled it
+                Err(e) if e.to_string() == "not_calendar" => {
+                    // LLM decided it wasn't a calendar action — fall through to chat
+                }
+                Err(e) => {
+                    log::warn!("Calendar agent error: {}", e);
+                    // Fall through to regular chat
+                }
+            }
+        }
+
+        // Regular conversational chat
+        if let Err(e) =
+            ollama::chat_streaming(app, message, history, context, model, system_prompt).await
         {
             log::error!("Ollama chat error: {}", e);
         }
@@ -205,6 +248,14 @@ pub async fn mark_plan_item_complete(
 ) -> Result<(), String> {
     let s = state.lock().await;
     ops::mark_plan_item_complete(&s.pool, &plan_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn clear_completed_plan_items(state: State<'_, SharedState>) -> Result<(), String> {
+    let s = state.lock().await;
+    ops::clear_completed_plan_items(&s.pool)
         .await
         .map_err(|e| e.to_string())
 }

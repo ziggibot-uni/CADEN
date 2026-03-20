@@ -7,6 +7,7 @@ interface Props {
   items: PlanItem[];
   onItemCompleted: (id: string) => void;
   onReorder: (newOrder: PlanItem[]) => void;
+  onClearCompleted: () => void;
 }
 
 function formatTime(iso: string | null): string {
@@ -80,20 +81,18 @@ function PlanRow({
       onDragEnd={onDragEnd}
       className={`group flex items-start gap-2.5 px-4 py-3 border-b border-surface-2
         select-none transition-colors duration-150 msg-appear
-        ${item.completed ? "opacity-35" : "hover:bg-surface-1"}
+        hover:bg-surface-1
         ${isDragOver ? "border-t-2 border-t-accent" : ""}
-        ${!item.completed ? "cursor-grab active:cursor-grabbing" : ""}`}
+        cursor-grab active:cursor-grabbing`}
     >
       {/* Drag handle indicator */}
-      {!item.completed && (
-        <div className="mt-2 flex-shrink-0 opacity-0 group-hover:opacity-30 transition-opacity">
-          <svg width="8" height="12" viewBox="0 0 8 12" fill="currentColor" className="text-text-dim">
-            <circle cx="2" cy="2" r="1.2"/><circle cx="6" cy="2" r="1.2"/>
-            <circle cx="2" cy="6" r="1.2"/><circle cx="6" cy="6" r="1.2"/>
-            <circle cx="2" cy="10" r="1.2"/><circle cx="6" cy="10" r="1.2"/>
-          </svg>
-        </div>
-      )}
+      <div className="mt-2 flex-shrink-0 opacity-0 group-hover:opacity-30 transition-opacity">
+        <svg width="8" height="12" viewBox="0 0 8 12" fill="currentColor" className="text-text-dim">
+          <circle cx="2" cy="2" r="1.2"/><circle cx="6" cy="2" r="1.2"/>
+          <circle cx="2" cy="6" r="1.2"/><circle cx="6" cy="6" r="1.2"/>
+          <circle cx="2" cy="10" r="1.2"/><circle cx="6" cy="10" r="1.2"/>
+        </svg>
+      </div>
 
       {/* Urgency dot */}
       <div className="mt-1.5 flex-shrink-0">
@@ -102,11 +101,7 @@ function PlanRow({
 
       {/* Content */}
       <div className="flex-1 min-w-0">
-        <div
-          className={`text-sm leading-snug ${
-            item.completed ? "line-through text-text-dim" : "text-text"
-          }`}
-        >
+        <div className="text-sm leading-snug text-text">
           {item.title}
         </div>
         <div className="flex items-center gap-2 mt-1">
@@ -118,37 +113,34 @@ function PlanRow({
         </div>
       </div>
 
-      {/* Complete button or done label */}
-      {item.completed ? (
-        <span className="text-[10px] text-text-dim self-center flex-shrink-0">
-          done
-        </span>
-      ) : (
-        <button
-          onClick={handleComplete}
-          disabled={completing}
-          title="Mark as done"
-          className="flex-shrink-0 self-center w-5 h-5 rounded border border-surface-3
-            hover:border-accent hover:bg-accent/10 transition-colors duration-150
-            flex items-center justify-center opacity-0 group-hover:opacity-100
-            text-text-dim hover:text-accent text-[10px] cursor-pointer"
-        >
-          {completing ? "…" : "✓"}
-        </button>
-      )}
+      {/* Complete button */}
+      <button
+        onClick={handleComplete}
+        disabled={completing}
+        title="Mark as done"
+        className="flex-shrink-0 self-center w-5 h-5 rounded border border-surface-3
+          hover:border-accent hover:bg-accent/10 transition-colors duration-150
+          flex items-center justify-center opacity-0 group-hover:opacity-100
+          text-text-dim hover:text-accent text-[10px] cursor-pointer"
+      >
+        {completing ? "…" : "✓"}
+      </button>
     </div>
   );
 }
 
-export function TodayPanel({ items, onItemCompleted, onReorder }: Props) {
+export function TodayPanel({ items, onItemCompleted, onReorder, onClearCompleted }: Props) {
   const pending = items.filter((i) => !i.completed);
   const done = items.filter((i) => i.completed);
 
-  const dragIndex = useRef<number | null>(null);
+  // Track dragged item by ID to avoid stale-index bugs when list changes during drag
+  const dragId = useRef<string | null>(null);
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
+  const [isDragging, setIsDragging] = useState(false);
 
-  function handleDragStart(e: React.DragEvent, index: number) {
-    dragIndex.current = index;
+  function handleDragStart(e: React.DragEvent, item: PlanItem) {
+    dragId.current = item.id;
+    setIsDragging(true);
     e.dataTransfer.effectAllowed = "move";
   }
 
@@ -160,56 +152,76 @@ export function TodayPanel({ items, onItemCompleted, onReorder }: Props) {
 
   function handleDrop(e: React.DragEvent, dropIdx: number) {
     e.preventDefault();
-    const fromIdx = dragIndex.current;
-    if (fromIdx === null || fromIdx === dropIdx) return;
+    const id = dragId.current;
+    dragId.current = null;
+    setDragOverIndex(null);
+    setIsDragging(false);
+
+    if (!id) return;
+
+    // Look up by ID so stale index from a mid-drag re-render can't corrupt the list
+    const fromIdx = pending.findIndex((i) => i.id === id);
+    if (fromIdx === -1 || fromIdx === dropIdx) return;
 
     const newPending = [...pending];
     const [moved] = newPending.splice(fromIdx, 1);
+    if (!moved) return;
     newPending.splice(dropIdx, 0, moved);
 
-    const newOrder = [...newPending, ...done];
-    onReorder(newOrder);
+    onReorder([...newPending, ...done]);
 
-    // Record the reorder as a correction for CADEN to learn from
     invoke("record_correction", {
       correctionType: "task_reorder",
       description: `User moved "${moved.title}" from position ${fromIdx + 1} to ${dropIdx + 1}`,
       data: JSON.stringify(newPending.map((i) => i.id)),
     }).catch(() => {});
-
-    dragIndex.current = null;
-    setDragOverIndex(null);
   }
 
   function handleDragEnd() {
-    dragIndex.current = null;
+    dragId.current = null;
     setDragOverIndex(null);
+    setIsDragging(false);
   }
 
   return (
     <div className="flex flex-col h-full panel-divider">
       {/* Header */}
-      <div className="px-4 py-3 border-b border-surface-2">
-        <div className="text-[11px] font-mono uppercase tracking-widest text-text-dim">
-          Today
+      <div className="px-4 py-3 border-b border-surface-2 flex items-start justify-between">
+        <div>
+          <div className="text-[11px] font-mono uppercase tracking-widest text-text-dim">
+            Today
+          </div>
+          <div className="text-base font-light text-text mt-0.5">
+            {new Date().toLocaleDateString([], {
+              weekday: "long",
+              month: "long",
+              day: "numeric",
+            })}
+          </div>
         </div>
-        <div className="text-base font-light text-text mt-0.5">
-          {new Date().toLocaleDateString([], {
-            weekday: "long",
-            month: "long",
-            day: "numeric",
-          })}
-        </div>
+        {done.length > 0 && (
+          <button
+            onClick={onClearCompleted}
+            className="text-[10px] font-mono text-text-dim hover:text-accent transition-colors mt-1 cursor-pointer"
+            title="Remove completed tasks from view"
+          >
+            clear {done.length} done
+          </button>
+        )}
       </div>
 
       {/* Task list */}
       <div className="flex-1 overflow-y-auto">
-        {items.length === 0 ? (
+        {pending.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full text-center px-6 gap-2">
-            <div className="text-text-dim text-sm">Nothing scheduled.</div>
-            <div className="text-text-dim text-xs">
-              Sync your calendar and tasks to get started.
+            <div className="text-text-dim text-sm">
+              {done.length > 0 ? `All ${done.length} tasks done.` : "Nothing scheduled."}
             </div>
+            {done.length === 0 && (
+              <div className="text-text-dim text-xs">
+                Sync your calendar and tasks to get started.
+              </div>
+            )}
           </div>
         ) : (
           <>
@@ -218,32 +230,25 @@ export function TodayPanel({ items, onItemCompleted, onReorder }: Props) {
                 key={item.id}
                 item={item}
                 onComplete={onItemCompleted}
-                onDragStart={(e) => handleDragStart(e, idx)}
+                onDragStart={(e) => handleDragStart(e, item)}
                 onDragOver={(e) => handleDragOver(e, idx)}
                 onDrop={(e) => handleDrop(e, idx)}
                 onDragEnd={handleDragEnd}
                 isDragOver={dragOverIndex === idx}
               />
             ))}
-            {done.length > 0 && pending.length > 0 && (
-              <div className="px-4 pt-4 pb-1">
-                <span className="text-[10px] font-mono uppercase tracking-widest text-text-dim">
-                  Completed
-                </span>
-              </div>
-            )}
-            {done.map((item) => (
-              <PlanRow
-                key={item.id}
-                item={item}
-                onComplete={onItemCompleted}
-                onDragStart={() => {}}
-                onDragOver={(e) => e.preventDefault()}
-                onDrop={() => {}}
-                onDragEnd={() => {}}
-                isDragOver={false}
+            {/* Drop zone at end — lets user drag an item to the last position */}
+            {isDragging && (
+              <div
+                className={`h-10 mx-4 my-1 border-2 border-dashed rounded transition-colors ${
+                  dragOverIndex === pending.length
+                    ? "border-accent bg-accent/5"
+                    : "border-surface-3"
+                }`}
+                onDragOver={(e) => { e.preventDefault(); setDragOverIndex(pending.length); }}
+                onDrop={(e) => handleDrop(e, pending.length)}
               />
-            ))}
+            )}
           </>
         )}
       </div>

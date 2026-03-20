@@ -211,6 +211,41 @@ pub async fn chat_streaming(
     Ok(())
 }
 
+/// Make a single non-streaming chat call and return the full response text.
+/// Used by the calendar agent for structured JSON extraction.
+pub async fn chat_oneshot(model: &str, prompt: &str) -> Result<String> {
+    let client = Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()?;
+
+    let req = OllamaChatRequest {
+        model: model.to_string(),
+        messages: vec![ChatMessage {
+            role: "user".to_string(),
+            content: prompt.to_string(),
+        }],
+        stream: false,
+    };
+
+    let resp = client
+        .post(format!("{}/api/chat", OLLAMA_BASE))
+        .json(&req)
+        .send()
+        .await
+        .map_err(|e| anyhow!("Ollama unreachable: {}", e))?;
+
+    if !resp.status().is_success() {
+        return Err(anyhow!("Ollama error: {}", resp.status()));
+    }
+
+    // Non-streaming: single JSON object with message.content
+    let body: serde_json::Value = resp.json().await?;
+    Ok(body["message"]["content"]
+        .as_str()
+        .unwrap_or("")
+        .to_string())
+}
+
 /// Pull a model via Ollama API.
 pub async fn pull_model(model: &str) -> Result<()> {
     let client = Client::builder()

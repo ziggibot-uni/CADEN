@@ -21,6 +21,7 @@ export default function App() {
     sync,
     markItemComplete,
     reorderItems,
+    clearCompleted,
   } = useAppState();
 
   // Apply font scale to root element whenever it changes
@@ -48,7 +49,7 @@ export default function App() {
       <div className="flex flex-1 overflow-hidden">
         {/* Left — Today's Plan (30%) */}
         <div className="w-[30%] flex flex-col overflow-hidden">
-          <TodayPanel items={planItems} onItemCompleted={markItemComplete} onReorder={reorderItems} />
+          <TodayPanel items={planItems} onItemCompleted={markItemComplete} onReorder={reorderItems} onClearCompleted={clearCompleted} />
         </div>
 
         {/* Center — CADEN Chat (50%) */}

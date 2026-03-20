@@ -127,6 +127,15 @@ export function useAppState() {
     setPlanItems(newOrder);
   }
 
+  const clearCompleted = useCallback(async () => {
+    try {
+      await invoke("clear_completed_plan_items");
+      await loadPlan();
+    } catch {
+      // ignore
+    }
+  }, [loadPlan]);
+
   // Build context for Ollama
   const plannerContext: PlannerContext = {
     date: new Date().toISOString(),
@@ -150,5 +159,6 @@ export function useAppState() {
     sync,
     markItemComplete,
     reorderItems,
+    clearCompleted,
   };
 }

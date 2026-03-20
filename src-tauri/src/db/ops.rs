@@ -205,6 +205,15 @@ pub async fn get_upcoming_items(pool: &SqlitePool) -> Result<Vec<UpcomingItem>> 
         .collect())
 }
 
+pub async fn clear_completed_plan_items(pool: &SqlitePool) -> Result<()> {
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    sqlx::query("DELETE FROM daily_plans WHERE date = ? AND completed = 1")
+        .bind(&today)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 pub fn generate_id() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let t = SystemTime::now()
