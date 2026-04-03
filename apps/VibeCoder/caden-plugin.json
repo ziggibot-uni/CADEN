@@ -1,0 +1,6 @@
+{
+  "name": "VibeCoder",
+  "install_command": "cd backend && pip install -r requirements.txt",
+  "dev_command": "start-dev.bat",
+  "port": 5180
+}

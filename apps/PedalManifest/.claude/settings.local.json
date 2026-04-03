@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls backend/blocks/buffers/*.json)",
+      "Bash(ls backend/blocks/gain/*.json)",
+      "Bash(ls backend/blocks/clipping/*.json)",
+      "Bash(ls backend/blocks/filters/*.json)",
+      "Bash(ls backend/blocks/compression/*.json)",
+      "Bash(ls backend/blocks/modulation/*.json)",
+      "Bash(find frontend/src -name *.jsx -o -name *.js -o -name *.css)",
+      "Bash(python -c \"from backend.engine.block_compiler import compile_circuit; print\\(''OK''\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\(r''c:\\\\Users\\\\User\\\\Desktop\\\\PedalManifest\\\\backend\\\\engine\\\\block_compiler.py''\\).read\\(\\)\\); print\\(''Syntax OK''\\)\")"
+    ]
+  }
+}

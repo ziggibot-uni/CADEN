@@ -1,0 +1,99 @@
+{
+  "id": "opamp_inverting",
+  "transform": "gain",
+  "topology": "Inverting Op-Amp Amplifier",
+  "components": [
+    {
+      "id": "U1",
+      "type": "op_amp",
+      "role": "Inverting amplifier — gain set by -Rf/Ri, signal phase is inverted",
+      "model": "TL071",
+      "substitutes": ["TL081", "OPA134", "NE5532", "LF353", "RC4558"],
+      "max_voltage": 36,
+      "max_current_ma": 25
+    },
+    {
+      "id": "Rf",
+      "type": "resistor",
+      "role": "Feedback resistor — sets gain magnitude as Av = Rf/Ri",
+      "formula": "Ri * 10^(gain_db/20)",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 5
+    },
+    {
+      "id": "Ri",
+      "type": "resistor",
+      "role": "Input resistor — sets gain and input impedance (Zin = Ri)",
+      "formula": "Rf / 10^(gain_db/20)",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 5
+    },
+    {
+      "id": "Cin",
+      "type": "capacitor",
+      "role": "Input coupling capacitor — blocks DC, forms highpass with Ri",
+      "formula": "1 / (2 * pi * f_low * Ri)",
+      "e_series": "E12",
+      "max_voltage": 50
+    },
+    {
+      "id": "Cout",
+      "type": "capacitor",
+      "role": "Output coupling capacitor — blocks DC bias",
+      "formula": "1 / (2 * pi * f_low * Rload)",
+      "e_series": "E12",
+      "max_voltage": 50
+    },
+    {
+      "id": "Rb1",
+      "type": "resistor",
+      "role": "Bias divider upper — Vcc/2 reference for non-inverting input",
+      "formula": "47e3",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 5
+    },
+    {
+      "id": "Rb2",
+      "type": "resistor",
+      "role": "Bias divider lower — Vcc/2 reference for non-inverting input",
+      "formula": "47e3",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 5
+    },
+    {
+      "id": "Cb",
+      "type": "capacitor",
+      "role": "Bias decoupling — stabilizes virtual ground",
+      "formula": "100e-6",
+      "e_series": "E12",
+      "max_voltage": 25
+    }
+  ],
+  "nodes": ["in", "out", "vcc", "gnd"],
+  "parameters": {
+    "gain_db": { "min": 0, "max": 60, "default": 20, "unit": "dB" },
+    "f_low": { "min": 1, "max": 200, "default": 20, "unit": "Hz" },
+    "supply_voltage": { "min": 5, "max": 18, "default": 9, "unit": "V" }
+  },
+  "spice_template": ".subckt TL071_model inp inn out vcc vee\nE1 mid 0 inp inn 200000\nR1 mid out 100\nC1 mid out 5p\n.ends\nXU1 noninv inv out vcc vee TL071_model\nRf out inv {{Rf}}\nRi in_ac inv {{Ri}}\nRb1 vcc noninv {{Rb1}}\nRb2 noninv gnd {{Rb2}}\nCb noninv gnd {{Cb}}\nCin in in_ac {{Cin}}\nCout out out_ac {{Cout}}\nVcc vcc gnd DC {{Vcc}}",
+  "dsp_model": {
+    "type": "transfer_function",
+    "description": "Inverted gain with coupling-cap highpass; input impedance equals Ri",
+    "order": 1,
+    "chain": [
+      { "type": "highpass", "order": 1, "cutoff_hz": "1 / (2 * pi * Cin * Ri)" },
+      { "type": "gain", "gain_db": "20 * log10(Rf/Ri)", "invert": true }
+    ],
+    "parameters": {
+      "gain_db": 20,
+      "hp_cutoff_hz": 20,
+      "lp_cutoff_hz": 3000000,
+      "phase_inversion": true
+    }
+  },
+  "behavioral_description": "A clean, phase-inverting gain stage commonly used in overdrive and distortion circuits where diodes are placed in the feedback loop. The inverting topology has a key advantage: its input impedance is set by Ri (the virtual ground summing point), which is well-defined and independent of the op-amp. This makes it ideal for summing multiple signals or for cascading with predictable loading. The gain is -Rf/Ri, providing precise control. In pedal circuits, this topology is the workhorse of the Tube Screamer, RAT, and countless other designs — the inverting input is where the magic happens when clipping diodes are added to the feedback path."
+}

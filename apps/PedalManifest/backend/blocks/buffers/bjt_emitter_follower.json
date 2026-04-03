@@ -1,0 +1,80 @@
+{
+  "id": "bjt_emitter_follower",
+  "transform": "buffer",
+  "topology": "BJT Emitter Follower",
+  "components": [
+    {
+      "id": "Q1",
+      "type": "NPN_BJT",
+      "role": "Emitter follower transistor — provides current gain and low output impedance",
+      "model": "2N3904",
+      "substitutes": ["BC549C", "2N2222", "BC547B"],
+      "max_voltage": 40,
+      "max_current_ma": 200
+    },
+    {
+      "id": "Rb1",
+      "type": "resistor",
+      "role": "Upper base bias resistor — voltage divider to set DC operating point",
+      "formula": "Vcc * (Re + Vbe/Ic) / (Vcc/2 + Vbe)",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 5
+    },
+    {
+      "id": "Rb2",
+      "type": "resistor",
+      "role": "Lower base bias resistor — voltage divider to set DC operating point",
+      "formula": "Rb1 * (Vcc/2 + Vbe) / (Vcc/2 - Vbe)",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 5
+    },
+    {
+      "id": "Re",
+      "type": "resistor",
+      "role": "Emitter resistor — sets bias current and determines output impedance",
+      "formula": "(Vcc/2 - Vbe) / Ic",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 20
+    },
+    {
+      "id": "Cin",
+      "type": "capacitor",
+      "role": "Input coupling capacitor — blocks DC, sets low-frequency -3dB point",
+      "formula": "1 / (2 * pi * f_low * (Rb1 || Rb2))",
+      "e_series": "E12",
+      "max_voltage": 50
+    },
+    {
+      "id": "Cout",
+      "type": "capacitor",
+      "role": "Output coupling capacitor — blocks DC from emitter node",
+      "formula": "1 / (2 * pi * f_low * Re)",
+      "e_series": "E12",
+      "max_voltage": 50
+    }
+  ],
+  "nodes": ["in", "out", "vcc", "gnd"],
+  "parameters": {
+    "bias_current_ma": { "min": 0.5, "max": 10, "default": 2, "unit": "mA" },
+    "f_low": { "min": 1, "max": 100, "default": 10, "unit": "Hz" },
+    "supply_voltage": { "min": 5, "max": 18, "default": 9, "unit": "V" }
+  },
+  "spice_template": ".model Q2N3904 NPN(Is=6.734f Xti=3 Eg=1.11 Vaf=74.03 Bf=416.4 Ne=1.259\n+   Ise=6.734f Ikf=66.78m Xtb=1.5 Br=.7389 Nc=2 Isc=0 Ikr=0 Rc=1\n+   Cjc=3.638p Mjc=.3085 Vjc=.75 Fc=.5 Cje=4.493p Mje=.2593 Vje=.75\n+   Tr=239.5n Tf=301.2p Itf=.4 Vtf=4 Xtf=2 Rb=10)\nQ1 vcc base emitter Q2N3904\nRb1 vcc base {{Rb1}}\nRb2 base gnd {{Rb2}}\nRe emitter gnd {{Re}}\nCin in base {{Cin}}\nCout emitter out {{Cout}}\nVcc vcc gnd DC {{Vcc}}",
+  "dsp_model": {
+    "type": "transfer_function",
+    "description": "Unity gain with first-order highpass from coupling caps and gentle bandwidth limit from BJT fT",
+    "order": 1,
+    "gain_linear": 0.98,
+    "highpass_hz": "1 / (2 * pi * Cin * (Rb1 || Rb2))",
+    "lowpass_hz": 500000,
+    "parameters": {
+      "gain": 0.98,
+      "hp_cutoff_hz": 10,
+      "lp_cutoff_hz": 500000
+    }
+  },
+  "behavioral_description": "A straightforward BJT emitter follower that provides near-unity voltage gain with current gain, converting a high-impedance signal to low impedance. Slightly less transparent than an op-amp buffer — the BJT introduces a small amount of even-harmonic coloration under signal peaks due to the nonlinear base-emitter junction. Input impedance is moderate (set by the bias divider, typically 50-200kΩ), so it may load passive pickups slightly more than a JFET buffer. Good for driving long cable runs or low-impedance loads downstream."
+}

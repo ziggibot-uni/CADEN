@@ -1,0 +1,43 @@
+{
+  "id": "rc_lowpass",
+  "transform": "filter",
+  "topology": "First-Order RC Lowpass Filter",
+  "components": [
+    {
+      "id": "R1",
+      "type": "resistor",
+      "role": "Filter resistor — sets cutoff frequency with C1 as fc = 1/(2*pi*R1*C1)",
+      "formula": "1 / (2 * pi * fc * C1)",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 10
+    },
+    {
+      "id": "C1",
+      "type": "capacitor",
+      "role": "Filter capacitor — sets cutoff frequency with R1",
+      "formula": "1 / (2 * pi * fc * R1)",
+      "e_series": "E12",
+      "max_voltage": 50
+    }
+  ],
+  "nodes": ["in", "out", "gnd"],
+  "parameters": {
+    "cutoff_hz": { "min": 100, "max": 20000, "default": 5000, "unit": "Hz" }
+  },
+  "spice_template": "R1 in out {{R1}}\nC1 out gnd {{C1}}",
+  "dsp_model": {
+    "type": "transfer_function",
+    "description": "First-order IIR lowpass filter; -3dB at cutoff, -20dB/decade rolloff above",
+    "order": 1,
+    "filter_type": "lowpass",
+    "implementation": "bilinear_transform",
+    "transfer_function": "H(s) = 1 / (1 + s*R1*C1)",
+    "parameters": {
+      "cutoff_hz": 5000,
+      "slope_db_per_octave": -6,
+      "slope_db_per_decade": -20
+    }
+  },
+  "behavioral_description": "The simplest possible tone control — a single resistor and capacitor that progressively rolls off treble above the cutoff frequency. The rolloff is gentle at -6dB per octave (first order), so it darkens the tone without creating a sharp frequency cliff. This is the basic building block found in guitar tone knobs, post-distortion tone shaping, and as a treble-cut filter after clipping stages to tame harshness. At low cutoff frequencies (1-2kHz) it produces a dark, muffled 'woman tone'; at higher settings (5-8kHz) it takes off just the fizzy top end while preserving presence and clarity."
+}

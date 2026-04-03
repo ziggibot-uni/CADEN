@@ -51,6 +51,7 @@ pub struct GoogleTask {
     pub completed: bool,
     pub notes: Option<String>,
     pub list_name: String,
+    pub list_id: String,
 }
 
 // ─── OAuth flow ───────────────────────────────────────────────────────────────
@@ -181,7 +182,10 @@ pub async fn refresh_access_token(
 
 // ─── Calendar API ─────────────────────────────────────────────────────────────
 
-pub async fn fetch_calendar_events(access_token: &str) -> Result<Vec<CalendarEvent>> {
+pub async fn fetch_calendar_events(
+    access_token: &str,
+    disabled_ids: &[String],
+) -> Result<Vec<CalendarEvent>> {
     let client = Client::new();
 
     let cals_resp = client
@@ -201,6 +205,9 @@ pub async fn fetch_calendar_events(access_token: &str) -> Result<Vec<CalendarEve
 
     for cal in &calendars {
         let cal_id = cal["id"].as_str().unwrap_or_default();
+        if disabled_ids.iter().any(|d| d == cal_id) {
+            continue;
+        }
         let cal_name = cal["summary"].as_str().unwrap_or("Calendar").to_string();
 
         let resp = client
@@ -265,6 +272,85 @@ pub async fn fetch_calendar_events(access_token: &str) -> Result<Vec<CalendarEve
     Ok(events)
 }
 
+/// Fetch calendar events across all enabled calendars between two RFC3339 timestamps.
+/// Used by the calendar agent to find free slots for work-block scheduling.
+pub async fn fetch_events_in_range(
+    access_token: &str,
+    disabled_ids: &[String],
+    time_min: &str,
+    time_max: &str,
+) -> Result<Vec<CalendarEvent>> {
+    let client = Client::new();
+
+    let cals_resp = client
+        .get("https://www.googleapis.com/calendar/v3/users/me/calendarList")
+        .bearer_auth(access_token)
+        .query(&[("maxResults", "20")])
+        .send()
+        .await?
+        .json::<serde_json::Value>()
+        .await?;
+
+    let calendars = cals_resp["items"].as_array().cloned().unwrap_or_default();
+    let mut events: Vec<CalendarEvent> = Vec::new();
+
+    for cal in &calendars {
+        let cal_id = cal["id"].as_str().unwrap_or_default();
+        if disabled_ids.iter().any(|d| d == cal_id) {
+            continue;
+        }
+        let cal_name = cal["summary"].as_str().unwrap_or("Calendar").to_string();
+
+        let resp = client
+            .get(format!(
+                "https://www.googleapis.com/calendar/v3/calendars/{}/events",
+                urlencoding::encode(cal_id)
+            ))
+            .bearer_auth(access_token)
+            .query(&[
+                ("timeMin", time_min),
+                ("timeMax", time_max),
+                ("singleEvents", "true"),
+                ("orderBy", "startTime"),
+                ("maxResults", "100"),
+            ])
+            .send()
+            .await?
+            .json::<serde_json::Value>()
+            .await?;
+
+        if let Some(items) = resp["items"].as_array() {
+            for item in items {
+                let id = item["id"].as_str().unwrap_or_default().to_string();
+                let title = item["summary"].as_str().unwrap_or("(no title)").to_string();
+                let all_day = item["start"]["date"].is_string();
+
+                let start_time = if all_day {
+                    format!("{}T00:00:00Z", item["start"]["date"].as_str().unwrap_or_default())
+                } else {
+                    item["start"]["dateTime"].as_str().unwrap_or_default().to_string()
+                };
+                let end_time = if all_day {
+                    format!("{}T00:00:00Z", item["end"]["date"].as_str().unwrap_or_default())
+                } else {
+                    item["end"]["dateTime"].as_str().unwrap_or_default().to_string()
+                };
+
+                events.push(CalendarEvent {
+                    id,
+                    title,
+                    start_time,
+                    end_time,
+                    all_day,
+                    calendar_name: cal_name.clone(),
+                });
+            }
+        }
+    }
+
+    Ok(events)
+}
+
 // ─── Tasks API ────────────────────────────────────────────────────────────────
 
 pub async fn fetch_tasks(access_token: &str) -> Result<Vec<GoogleTask>> {
@@ -306,6 +392,7 @@ pub async fn fetch_tasks(access_token: &str) -> Result<Vec<GoogleTask>> {
                     completed: item["status"].as_str() == Some("completed"),
                     notes: item["notes"].as_str().map(|s| s.to_string()),
                     list_name: list_name.clone(),
+                    list_id: list_id.to_string(),
                 });
             }
         }
@@ -398,6 +485,54 @@ pub async fn delete_calendar_event(
     Ok(())
 }
 
+pub async fn update_calendar_event(
+    access_token: &str,
+    calendar_id: &str,
+    event_id: &str,
+    title: Option<&str>,
+    start_iso: Option<&str>,
+    end_iso: Option<&str>,
+    description: Option<&str>,
+) -> Result<()> {
+    let client = Client::new();
+
+    // Build a partial update body with only the fields that changed
+    let mut body = serde_json::Map::new();
+    if let Some(t) = title {
+        body.insert("summary".to_string(), serde_json::Value::String(t.to_string()));
+    }
+    if let Some(s) = start_iso {
+        let mut start = serde_json::Map::new();
+        start.insert("dateTime".to_string(), serde_json::Value::String(s.to_string()));
+        body.insert("start".to_string(), serde_json::Value::Object(start));
+    }
+    if let Some(e) = end_iso {
+        let mut end = serde_json::Map::new();
+        end.insert("dateTime".to_string(), serde_json::Value::String(e.to_string()));
+        body.insert("end".to_string(), serde_json::Value::Object(end));
+    }
+    if let Some(d) = description {
+        body.insert("description".to_string(), serde_json::Value::String(d.to_string()));
+    }
+
+    let resp = client
+        .patch(format!(
+            "https://www.googleapis.com/calendar/v3/calendars/{}/events/{}",
+            urlencoding::encode(calendar_id),
+            urlencoding::encode(event_id)
+        ))
+        .bearer_auth(access_token)
+        .json(&body)
+        .send()
+        .await?;
+
+    if !resp.status().is_success() {
+        let err = resp.text().await.unwrap_or_default();
+        return Err(anyhow!("Update event failed: {}", err));
+    }
+    Ok(())
+}
+
 // ─── Tasks write API ──────────────────────────────────────────────────────────
 
 pub async fn get_task_lists(access_token: &str) -> Result<Vec<(String, String)>> {
@@ -456,6 +591,99 @@ pub async fn create_task(
     Ok(result["id"].as_str().unwrap_or("").to_string())
 }
 
+pub async fn update_task(
+    access_token: &str,
+    list_id: &str,
+    task_id: &str,
+    title: Option<&str>,
+    due_rfc3339: Option<&str>,
+) -> Result<()> {
+    let client = Client::new();
+    let mut body = serde_json::Map::new();
+    if let Some(t) = title {
+        body.insert("title".to_string(), serde_json::Value::String(t.to_string()));
+    }
+    if let Some(due) = due_rfc3339 {
+        body.insert("due".to_string(), serde_json::Value::String(due.to_string()));
+    }
+
+    let resp = client
+        .patch(format!(
+            "https://www.googleapis.com/tasks/v1/lists/{}/tasks/{}",
+            urlencoding::encode(list_id),
+            urlencoding::encode(task_id)
+        ))
+        .bearer_auth(access_token)
+        .json(&body)
+        .send()
+        .await?;
+
+    if !resp.status().is_success() {
+        let err = resp.text().await.unwrap_or_default();
+        return Err(anyhow!("Update task failed: {}", err));
+    }
+    Ok(())
+}
+
+pub async fn uncomplete_task(access_token: &str, list_id: &str, task_id: &str) -> Result<()> {
+    let client = Client::new();
+    let resp = client
+        .patch(format!(
+            "https://www.googleapis.com/tasks/v1/lists/{}/tasks/{}",
+            urlencoding::encode(list_id),
+            urlencoding::encode(task_id),
+        ))
+        .bearer_auth(access_token)
+        .json(&serde_json::json!({ "status": "needsAction", "completed": null }))
+        .send()
+        .await?;
+
+    if !resp.status().is_success() {
+        let err = resp.text().await.unwrap_or_default();
+        return Err(anyhow!("Uncomplete task failed: {}", err));
+    }
+    Ok(())
+}
+
+pub async fn complete_task(access_token: &str, list_id: &str, task_id: &str) -> Result<()> {
+    let client = Client::new();
+    let resp = client
+        .patch(format!(
+            "https://www.googleapis.com/tasks/v1/lists/{}/tasks/{}",
+            urlencoding::encode(list_id),
+            urlencoding::encode(task_id),
+        ))
+        .bearer_auth(access_token)
+        .json(&serde_json::json!({ "status": "completed" }))
+        .send()
+        .await?;
+
+    if !resp.status().is_success() {
+        let err = resp.text().await.unwrap_or_default();
+        return Err(anyhow!("Complete task failed: {}", err));
+    }
+    Ok(())
+}
+
+pub async fn delete_task(access_token: &str, list_id: &str, task_id: &str) -> Result<()> {
+    let client = Client::new();
+    let resp = client
+        .delete(format!(
+            "https://www.googleapis.com/tasks/v1/lists/{}/tasks/{}",
+            urlencoding::encode(list_id),
+            urlencoding::encode(task_id),
+        ))
+        .bearer_auth(access_token)
+        .send()
+        .await?;
+
+    if !resp.status().is_success() {
+        let err = resp.text().await.unwrap_or_default();
+        return Err(anyhow!("Delete task failed: {}", err));
+    }
+    Ok(())
+}
+
 // ─── PKCE helpers ─────────────────────────────────────────────────────────────
 
 fn generate_code_verifier() -> String {
@@ -467,6 +695,36 @@ fn generate_code_verifier() -> String {
 fn generate_code_challenge(verifier: &str) -> String {
     let hash = Sha256::digest(verifier.as_bytes());
     URL_SAFE_NO_PAD.encode(hash.as_slice())
+}
+
+/// Get a fresh access token by reading from DB and refreshing if expired.
+/// Self-contained — any module can call this with just a pool reference.
+pub async fn get_fresh_token_from_db(pool: &sqlx::SqlitePool) -> Result<String> {
+    let tokens_json = crate::db::get_setting(pool, "google_tokens")
+        .await?
+        .ok_or_else(|| anyhow!("Google not connected"))?;
+    let tokens: GoogleTokens = serde_json::from_str(&tokens_json)?;
+
+    let now = chrono::Utc::now().timestamp();
+    if tokens.expires_at - now > 60 {
+        return Ok(tokens.access_token);
+    }
+
+    let refresh_token = tokens
+        .refresh_token
+        .ok_or_else(|| anyhow!("No refresh token — re-authenticate Google"))?;
+    let client_id = crate::db::get_setting(pool, "google_client_id")
+        .await?
+        .unwrap_or_default();
+    let client_secret = crate::db::get_setting(pool, "google_client_secret")
+        .await?
+        .unwrap_or_default();
+
+    let new_tokens = refresh_access_token(&refresh_token, &client_id, &client_secret).await?;
+    let new_json = serde_json::to_string(&new_tokens)?;
+    crate::db::set_setting(pool, "google_tokens", &new_json).await?;
+
+    Ok(new_tokens.access_token)
 }
 
 // Suppress unused import warning for HashMap

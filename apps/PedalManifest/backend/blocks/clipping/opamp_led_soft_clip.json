@@ -1,0 +1,119 @@
+{
+  "id": "opamp_led_soft_clip",
+  "transform": "clipping",
+  "topology": "Op-Amp with LED Soft Clipping",
+  "components": [
+    {
+      "id": "U1",
+      "type": "op_amp",
+      "role": "Inverting amplifier — gain stage with LED feedback clipping",
+      "model": "TL071",
+      "substitutes": ["TL081", "RC4558", "NE5532", "OPA134"],
+      "max_voltage": 36,
+      "max_current_ma": 25
+    },
+    {
+      "id": "D1",
+      "type": "LED",
+      "role": "Positive-swing clipping LED — clips at ~1.8V, higher headroom than silicon",
+      "model": "red_LED",
+      "substitutes": ["green_LED", "yellow_LED"],
+      "max_voltage": 5,
+      "max_current_ma": 20
+    },
+    {
+      "id": "D2",
+      "type": "LED",
+      "role": "Negative-swing clipping LED — clips at ~1.8V",
+      "model": "red_LED",
+      "substitutes": ["green_LED", "yellow_LED"],
+      "max_voltage": 5,
+      "max_current_ma": 20
+    },
+    {
+      "id": "Rf",
+      "type": "resistor",
+      "role": "Feedback resistor — sets pre-clip gain with Ri",
+      "formula": "Ri * 10^(gain_db/20)",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 5
+    },
+    {
+      "id": "Ri",
+      "type": "resistor",
+      "role": "Input resistor — sets gain and input impedance",
+      "formula": "Rf / 10^(gain_db/20)",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 5
+    },
+    {
+      "id": "Cin",
+      "type": "capacitor",
+      "role": "Input coupling capacitor",
+      "formula": "1 / (2 * pi * f_low * Ri)",
+      "e_series": "E12",
+      "max_voltage": 50
+    },
+    {
+      "id": "Cout",
+      "type": "capacitor",
+      "role": "Output coupling capacitor",
+      "formula": "1 / (2 * pi * f_low * Rload)",
+      "e_series": "E12",
+      "max_voltage": 50
+    },
+    {
+      "id": "Rb1",
+      "type": "resistor",
+      "role": "Bias divider upper",
+      "formula": "47e3",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 5
+    },
+    {
+      "id": "Rb2",
+      "type": "resistor",
+      "role": "Bias divider lower",
+      "formula": "47e3",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 5
+    },
+    {
+      "id": "Cb",
+      "type": "capacitor",
+      "role": "Bias decoupling",
+      "formula": "100e-6",
+      "e_series": "E12",
+      "max_voltage": 25
+    }
+  ],
+  "nodes": ["in", "out", "vcc", "gnd"],
+  "parameters": {
+    "gain_db": { "min": 6, "max": 60, "default": 30, "unit": "dB" },
+    "f_low": { "min": 5, "max": 500, "default": 50, "unit": "Hz" },
+    "clip_threshold_v": { "min": 1.5, "max": 2.2, "default": 1.8, "unit": "V" },
+    "supply_voltage": { "min": 9, "max": 18, "default": 9, "unit": "V" }
+  },
+  "spice_template": ".model LED_red D(Is=1e-20 N=1.8 Rs=2 Bv=5 Ibv=10u Cjo=10p Eg=1.95)\n.subckt TL071_model inp inn out vcc vee\nE1 mid 0 inp inn 200000\nR1 mid out 100\n.ends\nXU1 noninv inv out vcc vee TL071_model\nRf out inv_d {{Rf}}\nD1 inv inv_d LED_red\nD2 inv_d inv LED_red\nRi in_ac inv {{Ri}}\nRb1 vcc noninv {{Rb1}}\nRb2 noninv gnd {{Rb2}}\nCb noninv gnd {{Cb}}\nCin in in_ac {{Cin}}\nCout out out_ac {{Cout}}\nVcc vcc gnd DC {{Vcc}}",
+  "dsp_model": {
+    "type": "waveshaper",
+    "description": "Gain into soft clipper with higher knee voltage than silicon; more headroom before clipping onset",
+    "nonlinearity_type": "tanh_scaled",
+    "chain": [
+      { "type": "highpass", "order": 1, "cutoff_hz": "1 / (2 * pi * Cin * Ri)" },
+      { "type": "gain", "gain_db": "20 * log10(Rf / Ri)" },
+      { "type": "waveshaper", "function": "tanh(x / 1.8) * 1.8", "threshold_v": 1.8, "symmetry": "symmetric" }
+    ],
+    "parameters": {
+      "gain_db": 30,
+      "clip_threshold_v": 1.8,
+      "symmetry": "symmetric",
+      "softness": 0.6
+    }
+  },
+  "behavioral_description": "LED clipping in the feedback loop provides a more open, dynamic overdrive compared to silicon diodes. The higher forward voltage (~1.8V vs ~0.6V) means the signal has three times more headroom before clipping begins, preserving more of the original dynamics and pick attack. The result is a crisper, more articulate overdrive that retains note clarity even at higher gain settings. The clipping knee is slightly sharper than silicon, giving a bit more edge and presence. This is the mod many players make to Tube Screamer-style circuits for a more transparent, less compressed drive sound. LEDs of different colors have slightly different thresholds (red ~1.8V, green ~2.0V, blue ~3.0V), enabling further tuning."
+}

@@ -1,0 +1,121 @@
+{
+  "id": "opamp_asymmetric_clip",
+  "transform": "clipping",
+  "topology": "Op-Amp with Asymmetric Diode Clipping",
+  "components": [
+    {
+      "id": "U1",
+      "type": "op_amp",
+      "role": "Inverting amplifier — gain stage with mismatched feedback diodes for asymmetric clipping",
+      "model": "TL071",
+      "substitutes": ["TL081", "RC4558", "NE5532", "OPA134"],
+      "max_voltage": 36,
+      "max_current_ma": 25
+    },
+    {
+      "id": "D1",
+      "type": "diode",
+      "role": "Positive-swing clipping — silicon diode clips at ~0.6V on positive half",
+      "model": "1N4148",
+      "substitutes": ["1N914"],
+      "max_voltage": 75,
+      "max_current_ma": 200
+    },
+    {
+      "id": "D2",
+      "type": "diode",
+      "role": "Negative-swing clipping — germanium diode clips at ~0.3V on negative half, creating asymmetry",
+      "model": "1N34A",
+      "substitutes": ["OA91", "OA95", "1N270"],
+      "max_voltage": 60,
+      "max_current_ma": 50
+    },
+    {
+      "id": "Rf",
+      "type": "resistor",
+      "role": "Feedback resistor — sets pre-clip gain",
+      "formula": "Ri * 10^(gain_db/20)",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 5
+    },
+    {
+      "id": "Ri",
+      "type": "resistor",
+      "role": "Input resistor — sets gain and input impedance",
+      "formula": "Rf / 10^(gain_db/20)",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 5
+    },
+    {
+      "id": "Cin",
+      "type": "capacitor",
+      "role": "Input coupling capacitor",
+      "formula": "1 / (2 * pi * f_low * Ri)",
+      "e_series": "E12",
+      "max_voltage": 50
+    },
+    {
+      "id": "Cout",
+      "type": "capacitor",
+      "role": "Output coupling capacitor",
+      "formula": "1 / (2 * pi * f_low * Rload)",
+      "e_series": "E12",
+      "max_voltage": 50
+    },
+    {
+      "id": "Rb1",
+      "type": "resistor",
+      "role": "Bias divider upper",
+      "formula": "47e3",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 5
+    },
+    {
+      "id": "Rb2",
+      "type": "resistor",
+      "role": "Bias divider lower",
+      "formula": "47e3",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 5
+    },
+    {
+      "id": "Cb",
+      "type": "capacitor",
+      "role": "Bias decoupling",
+      "formula": "100e-6",
+      "e_series": "E12",
+      "max_voltage": 25
+    }
+  ],
+  "nodes": ["in", "out", "vcc", "gnd"],
+  "parameters": {
+    "gain_db": { "min": 6, "max": 60, "default": 30, "unit": "dB" },
+    "f_low": { "min": 5, "max": 500, "default": 50, "unit": "Hz" },
+    "clip_threshold_pos_v": { "min": 0.5, "max": 0.7, "default": 0.6, "unit": "V" },
+    "clip_threshold_neg_v": { "min": 0.2, "max": 0.4, "default": 0.3, "unit": "V" },
+    "supply_voltage": { "min": 5, "max": 18, "default": 9, "unit": "V" }
+  },
+  "spice_template": ".model D1N4148 D(Is=2.52n Rs=.568 N=1.752 Bv=100 Ibv=100u Cjo=4p M=.4 tt=20n)\n.model D1N34A D(Is=2e-7 Rs=7 N=1.3 Bv=60 Ibv=18u Cjo=.5p M=.33)\n.subckt TL071_model inp inn out vcc vee\nE1 mid 0 inp inn 200000\nR1 mid out 100\n.ends\nXU1 noninv inv out vcc vee TL071_model\nRf out inv_d {{Rf}}\nD1 inv inv_d D1N4148\nD2 inv_d inv D1N34A\nRi in_ac inv {{Ri}}\nRb1 vcc noninv {{Rb1}}\nRb2 noninv gnd {{Rb2}}\nCb noninv gnd {{Cb}}\nCin in in_ac {{Cin}}\nCout out out_ac {{Cout}}\nVcc vcc gnd DC {{Vcc}}",
+  "dsp_model": {
+    "type": "waveshaper",
+    "description": "Asymmetric soft clipping — different thresholds for positive and negative swings produces even-order harmonics",
+    "nonlinearity_type": "asymmetric_tanh",
+    "chain": [
+      { "type": "highpass", "order": 1, "cutoff_hz": "1 / (2 * pi * Cin * Ri)" },
+      { "type": "gain", "gain_db": "20 * log10(Rf / Ri)" },
+      { "type": "waveshaper", "function": "x > 0 ? tanh(x / 0.6) * 0.6 : tanh(x / 0.3) * 0.3", "threshold_pos_v": 0.6, "threshold_neg_v": 0.3, "symmetry": "asymmetric" }
+    ],
+    "parameters": {
+      "gain_db": 30,
+      "clip_threshold_pos_v": 0.6,
+      "clip_threshold_neg_v": 0.3,
+      "symmetry": "asymmetric",
+      "even_harmonic_emphasis": true
+    }
+  },
+  "behavioral_description": "Asymmetric clipping using mismatched diode types produces a distinctly tube-like harmonic spectrum. The different clipping thresholds (silicon at ~0.6V positive, germanium at ~0.3V negative) create an asymmetric waveform that is rich in even-order harmonics (2nd, 4th, etc.), which the ear perceives as warm and full. This mimics the behavior of single-ended tube amplifiers, which clip asymmetrically due to the tube's transfer curve. The result is a thicker, more complex overdrive that sits well in a mix and has a more organic, amp-like quality than symmetric clipping. Many boutique overdrive pedals use this technique, sometimes with two silicon diodes on one side and one on the other, or mixing LED and silicon."
+}

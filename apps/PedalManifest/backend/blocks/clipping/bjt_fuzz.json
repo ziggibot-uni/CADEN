@@ -1,0 +1,137 @@
+{
+  "id": "bjt_fuzz",
+  "transform": "clipping",
+  "topology": "Two-Stage BJT Silicon Fuzz",
+  "components": [
+    {
+      "id": "Q1",
+      "type": "NPN_BJT",
+      "role": "First gain stage — provides initial amplification and drives Q2 into saturation",
+      "model": "2N3904",
+      "substitutes": ["BC549C", "2N2222", "BC108"],
+      "max_voltage": 40,
+      "max_current_ma": 200
+    },
+    {
+      "id": "Q2",
+      "type": "NPN_BJT",
+      "role": "Second gain stage — heavily saturated, produces the main fuzz clipping",
+      "model": "2N3904",
+      "substitutes": ["BC549C", "2N2222", "BC108"],
+      "max_voltage": 40,
+      "max_current_ma": 200
+    },
+    {
+      "id": "Rc1",
+      "type": "resistor",
+      "role": "Q1 collector resistor — sets first stage gain and headroom",
+      "formula": "(Vcc - Vce_sat) / Ic1",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 10
+    },
+    {
+      "id": "Re1",
+      "type": "resistor",
+      "role": "Q1 emitter resistor — stabilizes bias, small value for high gain",
+      "formula": "100",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 10
+    },
+    {
+      "id": "Rb1",
+      "type": "resistor",
+      "role": "Q1 base bias resistor — sets Q1 operating point",
+      "formula": "(Vcc - Vbe) / (Ic1 / beta)",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 5
+    },
+    {
+      "id": "Rc2",
+      "type": "resistor",
+      "role": "Q2 collector resistor — sets output level and final clipping behavior",
+      "formula": "(Vcc - Vce_sat) / Ic2",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 10
+    },
+    {
+      "id": "Rb2",
+      "type": "resistor",
+      "role": "Q2 base bias — fed from Q1 collector, sets second stage drive",
+      "formula": "10e3",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 5
+    },
+    {
+      "id": "Rfuzz",
+      "type": "potentiometer",
+      "role": "Fuzz control — varies amount of signal fed from Q2 collector back to Q1, controls sustain/fuzz intensity",
+      "formula": "1e3",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 10
+    },
+    {
+      "id": "Cin",
+      "type": "capacitor",
+      "role": "Input coupling — blocks DC, low value reduces bass for tighter fuzz",
+      "formula": "100e-9",
+      "e_series": "E12",
+      "max_voltage": 50
+    },
+    {
+      "id": "Cout",
+      "type": "capacitor",
+      "role": "Output coupling capacitor",
+      "formula": "100e-9",
+      "e_series": "E12",
+      "max_voltage": 50
+    },
+    {
+      "id": "Ce1",
+      "type": "capacitor",
+      "role": "Q1 emitter bypass — increases high-frequency gain of first stage",
+      "formula": "10e-6",
+      "e_series": "E12",
+      "max_voltage": 25
+    },
+    {
+      "id": "Rvol",
+      "type": "potentiometer",
+      "role": "Output volume control",
+      "formula": "500e3",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 1
+    }
+  ],
+  "nodes": ["in", "out", "vcc", "gnd"],
+  "parameters": {
+    "fuzz_amount": { "min": 0, "max": 100, "default": 75, "unit": "%" },
+    "volume": { "min": 0, "max": 100, "default": 50, "unit": "%" },
+    "supply_voltage": { "min": 5, "max": 9, "default": 9, "unit": "V" }
+  },
+  "spice_template": ".model Q2N3904 NPN(Is=6.734f Xti=3 Eg=1.11 Vaf=74.03 Bf=416.4 Ne=1.259\n+   Ise=6.734f Ikf=66.78m Xtb=1.5 Br=.7389 Nc=2 Isc=0 Ikr=0 Rc=1\n+   Cjc=3.638p Mjc=.3085 Vjc=.75 Fc=.5 Cje=4.493p Mje=.2593 Vje=.75\n+   Tr=239.5n Tf=301.2p Itf=.4 Vtf=4 Xtf=2 Rb=10)\nQ1 c1 b1 e1 Q2N3904\nQ2 c2 b2 gnd Q2N3904\nRc1 vcc c1 {{Rc1}}\nRe1 e1 gnd {{Re1}}\nCe1 e1 gnd {{Ce1}}\nRb1 vcc b1 {{Rb1}}\nRc2 vcc c2 {{Rc2}}\nRb2 c1 b2 {{Rb2}}\nRfuzz c2 b1 {{Rfuzz}}\nCin in b1 {{Cin}}\nCout c2 vol_wiper {{Cout}}\nRvol vol_wiper gnd {{Rvol}}\nVcc vcc gnd DC {{Vcc}}",
+  "dsp_model": {
+    "type": "waveshaper",
+    "description": "Very high gain cascaded stages into hard clipping with lowpass filtering from BJT bandwidth",
+    "nonlinearity_type": "hard_clip_saturated",
+    "chain": [
+      { "type": "highpass", "order": 1, "cutoff_hz": 160 },
+      { "type": "gain", "gain_db": 60 },
+      { "type": "waveshaper", "function": "clamp(x, -Vce_sat, Vce_sat)", "threshold_v": 0.2, "symmetry": "near_symmetric" },
+      { "type": "lowpass", "order": 2, "cutoff_hz": 5000 }
+    ],
+    "parameters": {
+      "total_gain_db": 60,
+      "clip_threshold_v": 0.2,
+      "lp_cutoff_hz": 5000,
+      "feedback_amount": "fuzz_amount"
+    }
+  },
+  "behavioral_description": "A classic two-transistor silicon fuzz producing thick, aggressive, sustaining distortion. Both transistors are driven deep into saturation, creating a heavily clipped, nearly square wave output. The sound is buzzy, thick, and harmonically dense with strong odd-order harmonics. The fuzz control pot adjusts feedback between stages, varying from gated sputtery fuzz at low settings to full, thick sustaining fuzz at maximum. Silicon transistors produce a brighter, more aggressive fuzz than germanium equivalents. The inherent bandwidth limiting of the BJTs rolls off the extreme high frequencies, preventing ice-pick harshness. The input coupling cap is intentionally small to roll off bass before clipping, preventing muddy, flubby fuzz tones. This topology is the basis of the Fuzz Face (silicon version) and Electro-Harmonix Big Muff variations."
+}

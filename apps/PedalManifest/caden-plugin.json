@@ -1,0 +1,6 @@
+{
+  "name": "PedalManifest",
+  "install_command": "npm install",
+  "dev_command": "start-dev.bat",
+  "port": 5175
+}

@@ -1,10 +1,11 @@
 import type { OllamaStatus, SyncStatus } from "../types";
+import { useSettings } from "../context/SettingsContext";
 
 interface Props {
   ollamaStatus: OllamaStatus;
   syncStatus: SyncStatus;
   onSettingsClick: () => void;
-  onSyncClick: () => void;
+  onRefreshClick: () => void;
 }
 
 function formatSyncTime(iso: string | null): string {
@@ -14,34 +15,37 @@ function formatSyncTime(iso: string | null): string {
   const diffMin = Math.floor((now.getTime() - d.getTime()) / 60000);
   if (diffMin < 1) return "just now";
   if (diffMin < 60) return `${diffMin}m ago`;
-  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit", hour12: true });
 }
 
 export function BottomBar({
   ollamaStatus,
   syncStatus,
   onSettingsClick,
-  onSyncClick,
+  onRefreshClick,
 }: Props) {
+  const { active_model } = useSettings();
   return (
     <div
       className="flex items-center justify-between px-4 py-2 border-t border-surface-2
         bg-surface text-[11px] text-text-dim font-mono"
     >
-      {/* Left: sync status */}
+      {/* Left: refresh */}
       <button
-        onClick={onSyncClick}
+        onClick={onRefreshClick}
         disabled={syncStatus.syncing}
         className="flex items-center gap-2 hover:text-text transition-colors duration-150 cursor-pointer"
-        title="Click to sync"
+        title="Refresh"
       >
         <span className={syncStatus.syncing ? "animate-spin" : ""}>
           <SyncIcon />
         </span>
         <span>
           {syncStatus.syncing
-            ? "syncing…"
-            : `synced ${formatSyncTime(syncStatus.last_sync)}`}
+            ? "refreshing…"
+            : syncStatus.gcal_error
+              ? `⚠️ ${syncStatus.gcal_error}`
+              : `synced ${formatSyncTime(syncStatus.last_sync)}`}
         </span>
       </button>
 
@@ -50,17 +54,17 @@ export function BottomBar({
         <span
           className={`w-1.5 h-1.5 rounded-full ${
             ollamaStatus.checking
-              ? "bg-[#b5842a] animate-pulse"
+              ? "bg-urgency-med animate-pulse"
               : ollamaStatus.online
-                ? "bg-[#2d6b61]"
-                : "bg-[#c0392b]"
+                ? "bg-status-success"
+                : "bg-urgency-high"
           }`}
         />
         <span>
           {ollamaStatus.checking
             ? "checking…"
             : ollamaStatus.online
-              ? (ollamaStatus.model ?? "ollama")
+              ? active_model
               : "ollama offline"}
         </span>
       </div>

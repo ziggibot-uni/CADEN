@@ -1,0 +1,161 @@
+{
+  "id": "ota_compressor",
+  "transform": "dynamics",
+  "topology": "OTA-Based Compressor",
+  "components": [
+    {
+      "id": "U1",
+      "type": "op_amp",
+      "role": "OTA (Operational Transconductance Amplifier) — voltage-controlled gain element; gain is proportional to bias current",
+      "model": "LM13700",
+      "substitutes": ["CA3080", "NE5517", "LM13600"],
+      "max_voltage": 36,
+      "max_current_ma": 20
+    },
+    {
+      "id": "U2",
+      "type": "op_amp",
+      "role": "Envelope detector op-amp — rectifies and smooths the input signal to derive a control voltage",
+      "model": "TL071",
+      "substitutes": ["TL081", "NE5532", "LF353"],
+      "max_voltage": 36,
+      "max_current_ma": 25
+    },
+    {
+      "id": "U3",
+      "type": "op_amp",
+      "role": "Output buffer — provides low-impedance output from OTA current output",
+      "model": "TL071",
+      "substitutes": ["TL081", "NE5532"],
+      "max_voltage": 36,
+      "max_current_ma": 25
+    },
+    {
+      "id": "D1",
+      "type": "diode",
+      "role": "Envelope rectifier — half-wave rectifier for envelope detection",
+      "model": "1N4148",
+      "substitutes": ["1N914"],
+      "max_voltage": 75,
+      "max_current_ma": 200
+    },
+    {
+      "id": "D2",
+      "type": "diode",
+      "role": "Envelope rectifier — second diode for full-wave rectification (optional)",
+      "model": "1N4148",
+      "substitutes": ["1N914"],
+      "max_voltage": 75,
+      "max_current_ma": 200
+    },
+    {
+      "id": "Renv",
+      "type": "resistor",
+      "role": "Envelope input resistor — scales signal into detector",
+      "formula": "47e3",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 5
+    },
+    {
+      "id": "Cenv",
+      "type": "capacitor",
+      "role": "Envelope smoothing capacitor — sets the overall envelope response time",
+      "formula": "1e-6",
+      "e_series": "E12",
+      "max_voltage": 25
+    },
+    {
+      "id": "Rattack",
+      "type": "resistor",
+      "role": "Attack time resistor — sets how fast the compressor responds to transients",
+      "formula": "attack_ms * 1e-3 / Cenv",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 5
+    },
+    {
+      "id": "Rrelease",
+      "type": "resistor",
+      "role": "Release time resistor — sets how fast the compressor recovers after signal drops",
+      "formula": "release_ms * 1e-3 / Cenv",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 5
+    },
+    {
+      "id": "Rsustain",
+      "type": "potentiometer",
+      "role": "Sustain/compression pot — controls the compression ratio by scaling the control voltage",
+      "formula": "100e3",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 5
+    },
+    {
+      "id": "Rlevel",
+      "type": "potentiometer",
+      "role": "Output level pot — compensates for gain reduction, sets output volume",
+      "formula": "100e3",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 5
+    },
+    {
+      "id": "Rload",
+      "type": "resistor",
+      "role": "OTA output load resistor — converts OTA output current to voltage",
+      "formula": "10e3",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 5
+    },
+    {
+      "id": "Cin",
+      "type": "capacitor",
+      "role": "Input coupling capacitor",
+      "formula": "100e-9",
+      "e_series": "E12",
+      "max_voltage": 50
+    },
+    {
+      "id": "Cout",
+      "type": "capacitor",
+      "role": "Output coupling capacitor",
+      "formula": "100e-9",
+      "e_series": "E12",
+      "max_voltage": 50
+    }
+  ],
+  "nodes": ["in", "out", "vcc", "gnd"],
+  "parameters": {
+    "attack_ms": { "min": 0.5, "max": 50, "default": 5, "unit": "ms" },
+    "release_ms": { "min": 20, "max": 500, "default": 100, "unit": "ms" },
+    "ratio": { "min": 1.5, "max": 20, "default": 4, "unit": ":1" },
+    "threshold_dbv": { "min": -40, "max": -10, "default": -20, "unit": "dBV" },
+    "sustain": { "min": 0, "max": 100, "default": 50, "unit": "%" },
+    "level": { "min": 0, "max": 100, "default": 70, "unit": "%" },
+    "supply_voltage": { "min": 9, "max": 18, "default": 9, "unit": "V" }
+  },
+  "spice_template": ".model D1N4148 D(Is=2.52n Rs=.568 N=1.752 Bv=100 Ibv=100u Cjo=4p M=.4 tt=20n)\n* LM13700 OTA simplified model\n.subckt LM13700_simple inp inn iabc out\nGout out 0 inp inn 19.2e-3\n.ends\n* Envelope detector\nXU2 env_in env_out env_out vcc vee TL071_model\nD1 env_out env_rect D1N4148\nRattack env_rect env_cap {{Rattack}}\nRrelease env_cap gnd {{Rrelease}}\nCenv env_cap gnd {{Cenv}}\nRsustain env_cap ctrl_v {{Rsustain}}\n* OTA VCA\nXU1 in_ac gnd ctrl_v ota_out LM13700_simple\nRload ota_out gnd {{Rload}}\n* Output buffer\nXU3 ota_out buf_out buf_out vcc vee TL071_model\nRlevel buf_out out {{Rlevel}}\nCin in in_ac {{Cin}}\nCout out out_ac {{Cout}}\nVcc vcc gnd DC {{Vcc}}",
+  "dsp_model": {
+    "type": "transfer_function",
+    "description": "Envelope follower driving variable-gain element; envelope controls gain reduction in real time",
+    "dynamics_type": "compressor",
+    "chain": [
+      { "type": "envelope_follower", "attack_ms": 5, "release_ms": 100, "detection": "peak" },
+      { "type": "gain_computer", "threshold_dbv": -20, "ratio": 4, "knee_db": 6 },
+      { "type": "variable_gain", "gain_range_db": [-40, 0] },
+      { "type": "makeup_gain", "gain_db": "level" }
+    ],
+    "parameters": {
+      "attack_ms": 5,
+      "release_ms": 100,
+      "threshold_dbv": -20,
+      "ratio": 4,
+      "knee_db": 6,
+      "makeup_gain_db": 10
+    }
+  },
+  "behavioral_description": "An OTA-based compressor that uses the LM13700's voltage-controlled transconductance to smoothly vary the signal gain based on an envelope-detected control voltage. The OTA naturally produces a clean, transparent gain change with minimal distortion artifacts. The attack control determines how quickly the compressor clamps down on transients — fast attack (1-5ms) squashes pick attack for a smooth, even sustain; slow attack (20-50ms) lets the initial transient through, preserving percussive snap. The release controls the recovery — fast release can cause audible 'pumping' and 'breathing' effects (sometimes desirable), while slow release gives a more natural decay. This is the topology behind the Ross Compressor, Dyna Comp, and many studio compressors. The OTA introduces a subtle, pleasant coloration that many guitarists prefer over VCA or optical compressors."
+}

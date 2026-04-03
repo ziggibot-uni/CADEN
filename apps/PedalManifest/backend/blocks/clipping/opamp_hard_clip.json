@@ -1,0 +1,138 @@
+{
+  "id": "opamp_hard_clip",
+  "transform": "clipping",
+  "topology": "Op-Amp Hard Clipping to Ground",
+  "components": [
+    {
+      "id": "U1",
+      "type": "op_amp",
+      "role": "High-gain inverting amplifier — drives signal well past diode threshold for hard clipping",
+      "model": "TL071",
+      "substitutes": ["LM308", "TL081", "RC4558", "OP07"],
+      "max_voltage": 36,
+      "max_current_ma": 25
+    },
+    {
+      "id": "D1",
+      "type": "diode",
+      "role": "Positive hard clipping diode — clamps output to ground + Vf",
+      "model": "1N4148",
+      "substitutes": ["1N914", "1N34A"],
+      "max_voltage": 75,
+      "max_current_ma": 200
+    },
+    {
+      "id": "D2",
+      "type": "diode",
+      "role": "Negative hard clipping diode — clamps output to ground - Vf",
+      "model": "1N4148",
+      "substitutes": ["1N914", "1N34A"],
+      "max_voltage": 75,
+      "max_current_ma": 200
+    },
+    {
+      "id": "Rf",
+      "type": "resistor",
+      "role": "Feedback resistor — sets open-loop gain before diode clamping",
+      "formula": "Ri * 10^(gain_db/20)",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 5
+    },
+    {
+      "id": "Ri",
+      "type": "resistor",
+      "role": "Input resistor — sets gain and input impedance",
+      "formula": "Rf / 10^(gain_db/20)",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 5
+    },
+    {
+      "id": "Rout",
+      "type": "resistor",
+      "role": "Output resistor — current limits the diodes and provides isolation",
+      "formula": "4.7e3",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 10
+    },
+    {
+      "id": "Cin",
+      "type": "capacitor",
+      "role": "Input coupling capacitor",
+      "formula": "1 / (2 * pi * f_low * Ri)",
+      "e_series": "E12",
+      "max_voltage": 50
+    },
+    {
+      "id": "Cf",
+      "type": "capacitor",
+      "role": "Feedback capacitor — optional bandwidth limiter to tame high-frequency harshness",
+      "formula": "1 / (2 * pi * f_lp * Rf)",
+      "e_series": "E12",
+      "max_voltage": 50
+    },
+    {
+      "id": "Cout",
+      "type": "capacitor",
+      "role": "Output coupling capacitor",
+      "formula": "1 / (2 * pi * f_low * Rload)",
+      "e_series": "E12",
+      "max_voltage": 50
+    },
+    {
+      "id": "Rb1",
+      "type": "resistor",
+      "role": "Bias divider upper",
+      "formula": "47e3",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 5
+    },
+    {
+      "id": "Rb2",
+      "type": "resistor",
+      "role": "Bias divider lower",
+      "formula": "47e3",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 5
+    },
+    {
+      "id": "Cb",
+      "type": "capacitor",
+      "role": "Bias decoupling",
+      "formula": "100e-6",
+      "e_series": "E12",
+      "max_voltage": 25
+    }
+  ],
+  "nodes": ["in", "out", "vcc", "gnd"],
+  "parameters": {
+    "gain_db": { "min": 20, "max": 60, "default": 40, "unit": "dB" },
+    "f_low": { "min": 5, "max": 500, "default": 30, "unit": "Hz" },
+    "f_lp": { "min": 2000, "max": 20000, "default": 5000, "unit": "Hz" },
+    "clip_threshold_v": { "min": 0.5, "max": 0.7, "default": 0.6, "unit": "V" },
+    "supply_voltage": { "min": 5, "max": 18, "default": 9, "unit": "V" }
+  },
+  "spice_template": ".model D1N4148 D(Is=2.52n Rs=.568 N=1.752 Bv=100 Ibv=100u Cjo=4p M=.4 tt=20n)\n.subckt TL071_model inp inn out vcc vee\nE1 mid 0 inp inn 200000\nR1 mid out 100\n.ends\nXU1 noninv inv out vcc vee TL071_model\nRf out inv {{Rf}}\nCf out inv {{Cf}}\nRi in_ac inv {{Ri}}\nRout out clip_node {{Rout}}\nD1 clip_node bias D1N4148\nD2 bias clip_node D1N4148\nRb1 vcc bias {{Rb1}}\nRb2 bias gnd {{Rb2}}\nCb bias gnd {{Cb}}\nCin in in_ac {{Cin}}\nCout clip_node out_ac {{Cout}}\nVcc vcc gnd DC {{Vcc}}",
+  "dsp_model": {
+    "type": "waveshaper",
+    "description": "High gain into hard clip function — diodes to ground produce abrupt, flat-topped clipping",
+    "nonlinearity_type": "hard_clip",
+    "chain": [
+      { "type": "highpass", "order": 1, "cutoff_hz": "1 / (2 * pi * Cin * Ri)" },
+      { "type": "gain", "gain_db": "20 * log10(Rf / Ri)" },
+      { "type": "lowpass", "order": 1, "cutoff_hz": "1 / (2 * pi * Cf * Rf)" },
+      { "type": "waveshaper", "function": "clamp(x, -0.6, 0.6)", "threshold_v": 0.6, "symmetry": "symmetric" }
+    ],
+    "parameters": {
+      "gain_db": 40,
+      "clip_threshold_v": 0.6,
+      "symmetry": "symmetric",
+      "softness": 0.1
+    }
+  },
+  "behavioral_description": "Hard clipping produces the most aggressive distortion character. Unlike soft clipping (diodes in feedback), here the op-amp output swings freely to full gain and the diodes to ground abruptly clamp the signal at the diode threshold. This creates a nearly square waveform at high gain settings, rich in odd-order harmonics that give a buzzy, aggressive edge. This is the topology of the ProCo RAT and MXR Distortion+. The feedback capacitor (Cf) is critical for taming the treble — without it, the harmonically rich hard-clipped signal can be painfully bright. At lower gain settings the transition region around the clipping threshold creates a crunchy, gritty texture. Hard clipping responds less to playing dynamics than soft clipping but delivers maximum sustain and saturation."
+}

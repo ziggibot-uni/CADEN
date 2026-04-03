@@ -1,0 +1,127 @@
+{
+  "id": "triangle_lfo",
+  "transform": "modulation",
+  "topology": "Op-Amp Triangle/Square LFO",
+  "components": [
+    {
+      "id": "U1a",
+      "type": "op_amp",
+      "role": "Schmitt trigger comparator — generates square wave by switching between high/low output at threshold voltages",
+      "model": "TL072",
+      "substitutes": ["NE5532", "OPA2134", "RC4558", "LF353"],
+      "max_voltage": 36,
+      "max_current_ma": 25
+    },
+    {
+      "id": "U1b",
+      "type": "op_amp",
+      "role": "Integrator — converts square wave to triangle wave by integrating the constant-current charge/discharge",
+      "model": "TL072",
+      "substitutes": ["NE5532", "OPA2134", "RC4558", "LF353"],
+      "max_voltage": 36,
+      "max_current_ma": 25
+    },
+    {
+      "id": "Rrate",
+      "type": "potentiometer",
+      "role": "Rate control pot — sets LFO frequency by controlling integrator charge rate",
+      "formula": "500e3",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 5
+    },
+    {
+      "id": "Cint",
+      "type": "capacitor",
+      "role": "Integrator capacitor — core timing element, sets frequency range with Rrate",
+      "formula": "1 / (4 * f_max * Rrate_min)",
+      "e_series": "E12",
+      "max_voltage": 25
+    },
+    {
+      "id": "Rh1",
+      "type": "resistor",
+      "role": "Schmitt trigger hysteresis resistor — positive feedback, sets switching thresholds",
+      "formula": "10e3",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 5
+    },
+    {
+      "id": "Rh2",
+      "type": "resistor",
+      "role": "Schmitt trigger hysteresis resistor — sets amplitude of triangle output",
+      "formula": "10e3",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 5
+    },
+    {
+      "id": "Rint",
+      "type": "resistor",
+      "role": "Integrator input resistor — works with Rrate to set charge current",
+      "formula": "10e3",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 5
+    },
+    {
+      "id": "Rdepth",
+      "type": "potentiometer",
+      "role": "Depth control — attenuates LFO output amplitude for modulation depth",
+      "formula": "100e3",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 5
+    },
+    {
+      "id": "Rb1",
+      "type": "resistor",
+      "role": "Bias divider upper — Vcc/2 reference for single-supply operation",
+      "formula": "47e3",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 5
+    },
+    {
+      "id": "Rb2",
+      "type": "resistor",
+      "role": "Bias divider lower",
+      "formula": "47e3",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 5
+    },
+    {
+      "id": "Cb",
+      "type": "capacitor",
+      "role": "Bias decoupling",
+      "formula": "100e-6",
+      "e_series": "E12",
+      "max_voltage": 25
+    }
+  ],
+  "nodes": ["tri_out", "sq_out", "vcc", "gnd"],
+  "parameters": {
+    "rate_hz": { "min": 0.5, "max": 15, "default": 3, "unit": "Hz" },
+    "depth": { "min": 0, "max": 100, "default": 50, "unit": "%" },
+    "waveform": { "options": ["triangle", "square"], "default": "triangle" },
+    "supply_voltage": { "min": 5, "max": 18, "default": 9, "unit": "V" }
+  },
+  "spice_template": ".subckt TL072_model inp inn out vcc vee\nE1 mid 0 inp inn 200000\nR1 mid out 100\n.ends\n* Schmitt trigger comparator\nXU1a tri_fb schmitt_inv sq_out vcc vee TL072_model\nRh1 sq_out tri_fb {{Rh1}}\nRh2 tri_fb bias {{Rh2}}\n* Integrator\nXU1b bias int_inv tri_out vcc vee TL072_model\nRint sq_out rate_node {{Rint}}\nRrate rate_node int_inv {{Rrate}}\nCint int_inv tri_out {{Cint}}\n* Depth control\nRdepth tri_out depth_out {{Rdepth}}\n* Bias\nRb1 vcc bias {{Rb1}}\nRb2 bias gnd {{Rb2}}\nCb bias gnd {{Cb}}\nVcc vcc gnd DC {{Vcc}}",
+  "dsp_model": {
+    "type": "lfo_modulator",
+    "description": "Low-frequency oscillator generating triangle and square waveforms for modulation effects",
+    "waveforms": ["triangle", "square", "sine_approx"],
+    "implementation": "phase_accumulator",
+    "parameters": {
+      "rate_hz": 3,
+      "depth_percent": 50,
+      "waveform": "triangle",
+      "dc_offset": 0.5,
+      "amplitude": 0.5,
+      "sine_approximation": "triangle waveform can be softened to approximate sine by applying tanh(tri * 1.5) / tanh(1.5)"
+    }
+  },
+  "behavioral_description": "A classic op-amp triangle wave LFO that generates both triangle and square wave outputs simultaneously. The circuit uses a Schmitt trigger (comparator with positive feedback) to generate a square wave, which is then integrated to produce a clean triangle wave. The rate pot controls how fast the integrator charges, setting the LFO speed from slow, deep sweeps (0.5Hz) to fast, bubbly warble (15Hz). The triangle output is smooth and continuous, ideal for tremolo and phaser modulation. The square output provides abrupt on/off switching, useful for choppy tremolo or tap-tempo sync. By passing the triangle through a soft-clipping function (tanh), a good sine approximation can be derived for smoother, more subtle modulation. This LFO block is the modulation source for tremolo, vibrato, chorus, phaser, and flanger effects."
+}

@@ -1,0 +1,108 @@
+{
+  "id": "opamp_noninverting",
+  "transform": "gain",
+  "topology": "Non-Inverting Op-Amp Amplifier",
+  "components": [
+    {
+      "id": "U1",
+      "type": "op_amp",
+      "role": "Non-inverting amplifier — gain set by feedback network Rf/Rg",
+      "model": "TL071",
+      "substitutes": ["TL081", "OPA134", "NE5532", "LF353", "RC4558"],
+      "max_voltage": 36,
+      "max_current_ma": 25
+    },
+    {
+      "id": "Rf",
+      "type": "resistor",
+      "role": "Feedback resistor — sets gain as Av = 1 + Rf/Rg",
+      "formula": "Rg * (10^(gain_db/20) - 1)",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 5
+    },
+    {
+      "id": "Rg",
+      "type": "resistor",
+      "role": "Ground-leg gain resistor — gain reference",
+      "formula": "Rf / (10^(gain_db/20) - 1)",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 5
+    },
+    {
+      "id": "Cin",
+      "type": "capacitor",
+      "role": "Input coupling capacitor — blocks DC",
+      "formula": "1 / (2 * pi * f_low * Rin)",
+      "e_series": "E12",
+      "max_voltage": 50
+    },
+    {
+      "id": "Cout",
+      "type": "capacitor",
+      "role": "Output coupling capacitor — blocks DC bias from output",
+      "formula": "1 / (2 * pi * f_low * Rload)",
+      "e_series": "E12",
+      "max_voltage": 50
+    },
+    {
+      "id": "Rin",
+      "type": "resistor",
+      "role": "Input resistor — DC return path to bias point",
+      "formula": "1e6",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 1
+    },
+    {
+      "id": "Rb1",
+      "type": "resistor",
+      "role": "Bias divider upper — Vcc/2 reference",
+      "formula": "47e3",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 5
+    },
+    {
+      "id": "Rb2",
+      "type": "resistor",
+      "role": "Bias divider lower — Vcc/2 reference",
+      "formula": "47e3",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 5
+    },
+    {
+      "id": "Cb",
+      "type": "capacitor",
+      "role": "Bias decoupling — stabilizes virtual ground",
+      "formula": "100e-6",
+      "e_series": "E12",
+      "max_voltage": 25
+    }
+  ],
+  "nodes": ["in", "out", "vcc", "gnd"],
+  "parameters": {
+    "gain_db": { "min": 0, "max": 60, "default": 20, "unit": "dB" },
+    "f_low": { "min": 1, "max": 200, "default": 20, "unit": "Hz" },
+    "supply_voltage": { "min": 5, "max": 18, "default": 9, "unit": "V" }
+  },
+  "spice_template": ".subckt TL071_model inp inn out vcc vee\nE1 mid 0 inp inn 200000\nR1 mid out 100\nC1 mid out 5p\n.ends\nXU1 noninv inv out vcc vee TL071_model\nRf out inv {{Rf}}\nRg inv bias {{Rg}}\nRb1 vcc bias {{Rb1}}\nRb2 bias gnd {{Rb2}}\nCb bias gnd {{Cb}}\nRin in_ac bias {{Rin}}\nCin in in_ac {{Cin}}\nCout out out_ac {{Cout}}\nVcc vcc gnd DC {{Vcc}}",
+  "dsp_model": {
+    "type": "transfer_function",
+    "description": "Clean gain with very wide bandwidth; effectively a gain block with coupling-cap highpass",
+    "order": 1,
+    "chain": [
+      { "type": "highpass", "order": 1, "cutoff_hz": "1 / (2 * pi * Cin * Rin)" },
+      { "type": "gain", "gain_db": "20 * log10(1 + Rf/Rg)" }
+    ],
+    "parameters": {
+      "gain_db": 20,
+      "hp_cutoff_hz": 20,
+      "lp_cutoff_hz": 3000000,
+      "phase_inversion": false
+    }
+  },
+  "behavioral_description": "A clean, precise gain stage with virtually no harmonic coloration within its linear range. The non-inverting topology preserves signal phase and provides very high input impedance. Gain is set purely by the ratio of two resistors (Av = 1 + Rf/Rg), making it highly predictable. The bandwidth is extremely wide — far beyond audio — so this stage adds no tonal color of its own. When driven to clipping (approaching the supply rails), it produces symmetric hard clipping that sounds harsh, so this block is typically used well within its linear range as a clean boost or as the gain element in a clipping stage where separate diodes shape the distortion character."
+}

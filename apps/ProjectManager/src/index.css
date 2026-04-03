@@ -1,0 +1,81 @@
+@import "../../../caden-base.css";
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    box-sizing: border-box;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+    background-color: var(--c-surface);
+    color: var(--c-text);
+    font-family: "Inter", system-ui, sans-serif;
+    font-size: calc(14px * var(--font-scale, 1));
+    line-height: 1.6;
+    filter: contrast(var(--contrast, 1));
+  }
+
+  /* Date/time picker icons — amber/gold for dark background contrast */
+  input[type="date"]::-webkit-calendar-picker-indicator,
+  input[type="time"]::-webkit-calendar-picker-indicator {
+    filter: brightness(0) invert(1) sepia(0.6) saturate(4) hue-rotate(5deg);
+    opacity: 0.6;
+    cursor: pointer;
+  }
+  input[type="date"]::-webkit-calendar-picker-indicator:hover,
+  input[type="time"]::-webkit-calendar-picker-indicator:hover {
+    opacity: 0.9;
+  }
+
+  ::-webkit-scrollbar {
+    width: 4px;
+    height: 4px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--c-surface-2);
+    border-radius: 2px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--c-surface-3);
+  }
+
+  button,
+  input,
+  textarea {
+    outline: none;
+    border: none;
+    background: none;
+    color: inherit;
+    font-family: inherit;
+    font-size: inherit;
+  }
+}
+
+@layer components {
+  .btn-ghost {
+    @apply px-3 py-1.5 rounded text-text-muted hover:text-text hover:bg-surface-2
+           transition-colors duration-150 cursor-pointer;
+  }
+  .btn-primary {
+    @apply px-4 py-2 rounded bg-accent-dim hover:bg-accent text-text
+           transition-colors duration-150 cursor-pointer;
+  }
+  .input-field {
+    @apply w-full bg-surface-2 border border-surface-3 rounded px-3 py-2
+           text-text placeholder:text-text-dim focus:border-accent-dim
+           transition-colors duration-150;
+  }
+}

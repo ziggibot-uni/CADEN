@@ -1,10 +1,14 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import { hexToRgb } from "../../caden-colors.js";
 import type {
   AppSettings,
   OllamaStatus,
   PlanItem,
   PlannerContext,
+  Plugin,
+  SyncOutcome,
   SyncStatus,
   UpcomingItem,
 } from "../types";
@@ -13,17 +17,26 @@ const DEFAULT_SETTINGS: AppSettings = {
   google_connected: false,
   moodle_url: null,
   moodle_token: null,
-  ollama_model: "llama3.1:8b",
+  active_model: "qwen3:14b",
+  github_pat: "",
+  groq_keys: [],
+  openrouter_key: "",
   system_prompt: "",
   task_duration_minutes: 45,
+  creative_time_minutes: 120,
   font_scale: 1.0,
+  contrast: 1.0,
   setup_complete: false,
+  work_hours: { mon: { start: 8, end: 22 }, tue: { start: 8, end: 22 }, wed: { start: 8, end: 22 }, thu: { start: 8, end: 22 }, fri: { start: 8, end: 22 }, sat: null, sun: null },
+  morning_meds: [],
+  evening_meds: [],
 };
 
 export function useAppState() {
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [planItems, setPlanItems] = useState<PlanItem[]>([]);
   const [upcomingItems, setUpcomingItems] = useState<UpcomingItem[]>([]);
+  const [plugins, setPlugins] = useState<Plugin[]>([]);
   const [ollamaStatus, setOllamaStatus] = useState<OllamaStatus>({
     online: false,
     model: null,
@@ -32,6 +45,7 @@ export function useAppState() {
   const [syncStatus, setSyncStatus] = useState<SyncStatus>({
     last_sync: null,
     syncing: false,
+    gcal_error: null,
   });
   const [initialized, setInitialized] = useState(false);
 
@@ -43,6 +57,26 @@ export function useAppState() {
         setSettings(s);
       } catch {
         // Use defaults
+      }
+      try {
+        const p = await invoke<Plugin[]>("list_plugins");
+        setPlugins(p);
+      } catch {
+        // No plugins yet
+      }
+      // Load saved theme colors
+      try {
+        const raw = await invoke<string | null>("get_setting_value", { key: "theme_colors" });
+        if (raw) {
+          const colors: Record<string, string> = JSON.parse(raw);
+          for (const [key, val] of Object.entries(colors)) {
+            // Saved colors are hex — CSS vars need "R G B" format
+            const rgb = val.startsWith("#") ? hexToRgb(val) : val;
+            document.documentElement.style.setProperty(key, rgb);
+          }
+        }
+      } catch {
+        // Use CSS defaults
       }
       setInitialized(true);
     }
@@ -82,36 +116,65 @@ export function useAppState() {
     }
   }, []);
 
-  // Full sync
-  const sync = useCallback(async () => {
-    if (syncStatus.syncing) return;
-    setSyncStatus((prev) => ({ ...prev, syncing: true }));
-    try {
-      await invoke("sync_all");
-      await Promise.all([loadPlan(), loadUpcoming()]);
-      setSyncStatus({ last_sync: new Date().toISOString(), syncing: false });
-    } catch {
-      setSyncStatus((prev) => ({ ...prev, syncing: false }));
-    }
-  }, [syncStatus.syncing, loadPlan, loadUpcoming]);
+  const syncingRef = useRef(false);
 
-  // Initial load after initialization
+  // Full sync — returns outcome with replanned flag and any GCal error
+  const sync = useCallback(async () => {
+    if (syncingRef.current) return;
+    syncingRef.current = true;
+    setSyncStatus((prev) => ({ ...prev, syncing: true, gcal_error: null }));
+    let outcome: SyncOutcome = { replanned: false, events_changed: false, gcal_error: null };
+    try {
+      outcome = await invoke<SyncOutcome>("sync_all");
+    } catch (e) {
+      console.error("sync_all failed:", e);
+    } finally {
+      if (outcome.replanned || outcome.events_changed) {
+        await Promise.all([loadPlan(), loadUpcoming()]);
+      }
+      setSyncStatus((prev) => ({
+        last_sync: outcome.gcal_error ? prev.last_sync : new Date().toISOString(),
+        syncing: false,
+        gcal_error: outcome.gcal_error,
+      }));
+      syncingRef.current = false;
+    }
+  }, [loadPlan, loadUpcoming]);
+
+  // On startup: load whatever is in the DB immediately so the UI isn't blank,
+  // then always fire a full sync. The backend fingerprint gate ensures we only
+  // replan when data has actually changed, so this is safe to do every launch.
   useEffect(() => {
     if (!initialized) return;
     checkOllama();
     loadPlan();
     loadUpcoming();
-  }, [initialized, checkOllama, loadPlan, loadUpcoming]);
+    sync();
+  }, [initialized]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Periodic refresh: Ollama every 30s, sync every 15 min
+  // Background poll for Ollama status only — sync is driven by the backend
+  // tokio loop (every 15 min) which emits "caden-sync-complete". This keeps
+  // sync alive even when the webview is frozen or minimised.
   useEffect(() => {
     const ollamaTimer = setInterval(checkOllama, 30_000);
-    const syncTimer = setInterval(sync, 15 * 60_000);
-    return () => {
-      clearInterval(ollamaTimer);
-      clearInterval(syncTimer);
-    };
-  }, [checkOllama, sync]);
+    return () => { clearInterval(ollamaTimer); };
+  }, [checkOllama]);
+
+  // Listen for backend-driven sync completions and refresh the UI.
+  useEffect(() => {
+    const unlisten = listen<SyncOutcome>("caden-sync-complete", async (event) => {
+      const outcome = event.payload;
+      if (outcome.replanned || outcome.events_changed) {
+        await Promise.all([loadPlan(), loadUpcoming()]);
+      }
+      setSyncStatus((prev) => ({
+        last_sync: outcome.gcal_error ? prev.last_sync : new Date().toISOString(),
+        syncing: false,
+        gcal_error: outcome.gcal_error,
+      }));
+    });
+    return () => { unlisten.then((f) => f()); };
+  }, [loadPlan, loadUpcoming]);
 
   function markItemComplete(id: string) {
     setPlanItems((prev) =>
@@ -123,8 +186,22 @@ export function useAppState() {
     );
   }
 
+  function unmarkItemComplete(id: string) {
+    setPlanItems((prev) =>
+      prev.map((item) =>
+        item.id === id ? { ...item, completed: false, completed_at: null } : item
+      )
+    );
+  }
+
   function reorderItems(newOrder: PlanItem[]) {
     setPlanItems(newOrder);
+  }
+
+  function updatePlanItem(id: string, updates: Partial<PlanItem>) {
+    setPlanItems((prev) =>
+      prev.map((item) => (item.id === id ? { ...item, ...updates } : item))
+    );
   }
 
   const clearCompleted = useCallback(async () => {
@@ -136,21 +213,33 @@ export function useAppState() {
     }
   }, [loadPlan]);
 
-  // Build context for Ollama
-  const plannerContext: PlannerContext = {
+  function addPlugin(plugin: Plugin) {
+    setPlugins((prev) => [...prev, plugin]);
+  }
+
+  function removePlugin(id: string) {
+    setPlugins((prev) => prev.filter((p) => p.id !== id));
+  }
+
+  function deleteItem(id: string) {
+    setPlanItems((prev) => prev.filter((item) => item.id !== id));
+  }
+
+  const plannerContext: PlannerContext = useMemo(() => ({
     date: new Date().toISOString(),
-    plan_items: planItems,
+    plan_items: planItems.filter((i) => !i.completed),
     upcoming_deadlines: upcomingItems.slice(0, 3),
-    recent_completions: planItems
-      .filter((i) => i.completed)
-      .slice(-3),
-  };
+    recent_completions: planItems.filter((i) => i.completed).slice(-3),
+  }), [planItems, upcomingItems]);
 
   return {
     settings,
     setSettings,
     planItems,
     upcomingItems,
+    plugins,
+    addPlugin,
+    removePlugin,
     ollamaStatus,
     syncStatus,
     plannerContext,
@@ -158,7 +247,10 @@ export function useAppState() {
     checkOllama,
     sync,
     markItemComplete,
+    unmarkItemComplete,
     reorderItems,
+    updatePlanItem,
     clearCompleted,
+    deleteItem,
   };
 }

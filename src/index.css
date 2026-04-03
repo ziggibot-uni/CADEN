@@ -1,3 +1,5 @@
+@import "../caden-base.css";
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -15,14 +17,26 @@
     margin: 0;
     padding: 0;
     overflow: hidden;
-    background-color: #0f0f0f;
-    color: #c8c8c8;
+    background-color: var(--c-surface);
+    color: var(--c-text);
     font-family: "Inter", system-ui, sans-serif;
     font-size: calc(14px * var(--font-scale, 1));
     line-height: 1.6;
+    filter: contrast(var(--contrast, 1));
   }
 
-  /* Scrollbar — minimal, dark */
+  /* Date/time picker icons — amber/gold to contrast against dark backgrounds */
+  input[type="date"]::-webkit-calendar-picker-indicator,
+  input[type="time"]::-webkit-calendar-picker-indicator {
+    filter: brightness(0) invert(1) sepia(0.6) saturate(4) hue-rotate(5deg);
+    opacity: 0.6;
+    cursor: pointer;
+  }
+  input[type="date"]::-webkit-calendar-picker-indicator:hover,
+  input[type="time"]::-webkit-calendar-picker-indicator:hover {
+    opacity: 0.9;
+  }
+
   ::-webkit-scrollbar {
     width: 4px;
     height: 4px;
@@ -31,14 +45,13 @@
     background: transparent;
   }
   ::-webkit-scrollbar-thumb {
-    background: #272727;
+    background: var(--c-surface-2);
     border-radius: 2px;
   }
   ::-webkit-scrollbar-thumb:hover {
-    background: #3a3a3a;
+    background: var(--c-surface-3);
   }
 
-  /* Remove default button/input chrome */
   button,
   input,
   textarea {
@@ -52,9 +65,8 @@
 }
 
 @layer components {
-  /* Panel dividers */
   .panel-divider {
-    @apply border-r border-[#1e1e1e];
+    @apply border-r border-surface-2;
   }
 
   /* Source tag pills */
@@ -62,13 +74,13 @@
     @apply text-[10px] font-mono uppercase tracking-wider px-1.5 py-0.5 rounded;
   }
   .source-tag-calendar {
-    @apply source-tag bg-[#1a2a3a] text-[#5a8ab5];
+    @apply source-tag bg-surface-1 text-accent;
   }
   .source-tag-tasks {
-    @apply source-tag bg-[#1a2d2a] text-[#4a9b8e];
+    @apply source-tag bg-accent-muted text-accent;
   }
   .source-tag-moodle {
-    @apply source-tag bg-[#2a1a2d] text-[#8a5ab5];
+    @apply source-tag bg-source-moodle-bg text-source-moodle;
   }
 
   /* Urgency dot */
@@ -76,33 +88,33 @@
     @apply w-1.5 h-1.5 rounded-full flex-shrink-0;
   }
   .urgency-high {
-    @apply bg-[#c0392b];
+    background-color: var(--c-urgency-high);
   }
   .urgency-med {
-    @apply bg-[#b5842a];
+    background-color: var(--c-urgency-med);
   }
   .urgency-low {
-    @apply bg-[#2d6b61];
+    background-color: var(--c-urgency-low);
   }
 
-  /* Chat message */
+  /* Chat messages */
   .chat-msg-user {
-    @apply text-[#c8c8c8] self-end;
+    color: var(--c-text);
+    @apply self-end;
   }
   .chat-msg-assistant {
-    @apply text-[#9ab8b5] self-start;
+    color: var(--c-accent);
+    @apply self-start;
   }
 
-  /* Subtle button */
+  /* Buttons */
   .btn-ghost {
     @apply px-3 py-1.5 rounded text-text-muted hover:text-text hover:bg-surface-2
            transition-colors duration-150 cursor-pointer;
   }
-
-  /* Primary button */
   .btn-primary {
-    @apply px-4 py-2 rounded bg-accent-dim hover:bg-accent text-[#c8c8c8]
-           transition-colors duration-150 cursor-pointer;
+    @apply px-4 py-2 rounded bg-accent-dim hover:bg-accent transition-colors duration-150 cursor-pointer;
+    color: var(--c-text);
   }
 
   /* Input field */
@@ -123,7 +135,7 @@
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background-color: #4a9b8e;
+  background-color: var(--c-accent);
   animation: thinkPulse 1.6s ease-in-out infinite;
 }
 

@@ -85,6 +85,44 @@ CREATE TABLE IF NOT EXISTS patterns (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_patterns_type_time
     ON patterns(task_type, time_of_day);
 
+-- ─── Projects (long-term work / knowledge base) ─────────────────────────────
+CREATE TABLE IF NOT EXISTS projects (
+    id          TEXT PRIMARY KEY NOT NULL,
+    name        TEXT NOT NULL,
+    description TEXT,
+    status      TEXT NOT NULL DEFAULT 'active', -- active, paused, completed, archived
+    folder_path TEXT,
+    parent_id   TEXT REFERENCES projects(id) ON DELETE SET NULL,
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_projects_status ON projects(status);
+
+CREATE TABLE IF NOT EXISTS project_entries (
+    id          TEXT PRIMARY KEY NOT NULL,
+    project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    entry_type  TEXT NOT NULL DEFAULT 'note', -- todo, update, decision, idea, blocker, reference
+    content     TEXT NOT NULL,
+    tags        TEXT,
+    completed   INTEGER NOT NULL DEFAULT 0,
+    created_at  TEXT NOT NULL,
+    embedding   BLOB  -- nomic-embed-text vector, stored as little-endian f32 bytes
+);
+
+CREATE INDEX IF NOT EXISTS idx_project_entries_project ON project_entries(project_id);
+
+-- ─── Plugin registry ────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS plugins (
+    id          TEXT PRIMARY KEY NOT NULL,
+    name        TEXT NOT NULL,
+    folder_path TEXT NOT NULL,
+    entry       TEXT NOT NULL DEFAULT '',
+    dev_url     TEXT,
+    sort_order  INTEGER NOT NULL DEFAULT 0,
+    created_at  TEXT NOT NULL
+);
+
 -- ─── User corrections / preference log ──────────────────────────────────────
 CREATE TABLE IF NOT EXISTS user_corrections (
     id              TEXT PRIMARY KEY NOT NULL,
@@ -93,3 +131,59 @@ CREATE TABLE IF NOT EXISTS user_corrections (
     data            TEXT,             -- JSON payload
     timestamp       TEXT NOT NULL
 );
+
+-- ─── Sean Model: circadian energy grid (24 hours × 7 days) ──────────────────
+-- Tracks how productive Sean is at each hour of the week.
+-- Updated whenever a task is completed or skipped.
+CREATE TABLE IF NOT EXISTS circadian_model (
+    hour        INTEGER NOT NULL CHECK(hour >= 0 AND hour <= 23),
+    day_of_week INTEGER NOT NULL CHECK(day_of_week >= 0 AND day_of_week <= 6), -- 0=Mon
+    completions INTEGER NOT NULL DEFAULT 0,
+    samples     INTEGER NOT NULL DEFAULT 0,
+    last_updated TEXT NOT NULL,
+    PRIMARY KEY (hour, day_of_week)
+);
+
+-- ─── Sean Model: behavioral event log ────────────────────────────────────────
+-- Fine-grained log used for flow state detection and spike analysis.
+CREATE TABLE IF NOT EXISTS behavioral_log (
+    id              TEXT PRIMARY KEY NOT NULL,
+    event_type      TEXT NOT NULL,   -- 'completion', 'skip', 'flow_window'
+    task_type       TEXT,
+    hour            INTEGER,
+    day_of_week     INTEGER,
+    duration_minutes INTEGER,
+    timestamp       TEXT NOT NULL
+);
+
+-- ─── Sean Model: chat log ────────────────────────────────────────────────────
+-- Every message Sean sends to CADEN is stored here with its embedding.
+-- Only user-role messages — CADEN's responses are not stored (this is about
+-- learning Sean, not CADEN). Over time this becomes a searchable record of
+-- everything Sean has expressed, asked, or worried about.
+CREATE TABLE IF NOT EXISTS chat_log (
+    id          TEXT PRIMARY KEY NOT NULL,
+    content     TEXT NOT NULL,
+    embedding   BLOB,               -- nomic-embed-text vector (f32 LE bytes)
+    timestamp   TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_chat_log_timestamp ON chat_log(timestamp);
+
+-- ─── Web search cache (cited results with embeddings) ────────────────────────
+-- Every URL CADEN looks up is stored here so it can be cited and revisited.
+-- Embeddings enable semantic recall ("find what I searched about X before").
+CREATE TABLE IF NOT EXISTS web_search_cache (
+    id          TEXT PRIMARY KEY NOT NULL,
+    query       TEXT NOT NULL,
+    url         TEXT NOT NULL,
+    title       TEXT NOT NULL,
+    snippet     TEXT,
+    content     TEXT,       -- fetched page text, truncated to ~4000 chars
+    embedding   BLOB,       -- nomic-embed-text vector (f32 LE bytes)
+    searched_at TEXT NOT NULL,
+    accessed_at TEXT        -- last time CADEN re-referenced this URL
+);
+
+CREATE INDEX IF NOT EXISTS idx_web_search_query ON web_search_cache(query);
+CREATE INDEX IF NOT EXISTS idx_web_search_url   ON web_search_cache(url);

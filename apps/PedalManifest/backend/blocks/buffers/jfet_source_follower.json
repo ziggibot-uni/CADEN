@@ -1,0 +1,78 @@
+{
+  "id": "jfet_source_follower",
+  "transform": "buffer",
+  "topology": "JFET Source Follower",
+  "components": [
+    {
+      "id": "J1",
+      "type": "N_JFET",
+      "role": "Source follower transistor — provides high input impedance and unity voltage gain",
+      "model": "J201",
+      "substitutes": ["2N5457", "2N5458", "MMBFJ201"],
+      "max_voltage": 40,
+      "max_current_ma": 50
+    },
+    {
+      "id": "R1",
+      "type": "resistor",
+      "role": "Gate bias resistor — sets input impedance to ~1MΩ",
+      "formula": "1e6",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 1
+    },
+    {
+      "id": "Rs",
+      "type": "resistor",
+      "role": "Source resistor — sets bias current and output impedance",
+      "formula": "Vcc / (2 * Idss)",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 20
+    },
+    {
+      "id": "Rd",
+      "type": "resistor",
+      "role": "Drain resistor — optional, for biasing",
+      "formula": "(Vcc - Vds - Vs) / Id",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 20
+    },
+    {
+      "id": "Cin",
+      "type": "capacitor",
+      "role": "Input coupling capacitor — blocks DC, sets low-frequency rolloff",
+      "formula": "1 / (2 * pi * f_low * R1)",
+      "e_series": "E12",
+      "max_voltage": 50
+    },
+    {
+      "id": "Cout",
+      "type": "capacitor",
+      "role": "Output coupling capacitor — blocks DC from source node",
+      "formula": "1 / (2 * pi * f_low * Rs)",
+      "e_series": "E12",
+      "max_voltage": 50
+    }
+  ],
+  "nodes": ["in", "out", "vcc", "gnd"],
+  "parameters": {
+    "input_impedance": { "min": 500000, "max": 10000000, "default": 1000000, "unit": "ohm" },
+    "f_low": { "min": 1, "max": 100, "default": 10, "unit": "Hz" },
+    "bias_current_ma": { "min": 0.5, "max": 5, "default": 1.5, "unit": "mA" }
+  },
+  "spice_template": ".model J201_mod NJF(Vto=-0.8 Beta=1.4e-3 Lambda=2e-3 Is=1e-14)\nJ1 drain gate source J201_mod\nR1 gate gnd {{R1}}\nRs source gnd {{Rs}}\nRd vcc drain {{Rd}}\nCin in gate {{Cin}}\nCout source out {{Cout}}\nVcc vcc gnd DC {{Vcc}}",
+  "dsp_model": {
+    "type": "transfer_function",
+    "description": "Unity gain with first-order highpass from input coupling capacitor",
+    "order": 1,
+    "gain_linear": 1.0,
+    "highpass_hz": "1 / (2 * pi * Cin * R1)",
+    "parameters": {
+      "gain": 1.0,
+      "hp_cutoff_hz": 10
+    }
+  },
+  "behavioral_description": "A transparent, high-impedance input buffer that preserves the guitar signal without loading the pickups. The JFET source follower provides approximately unity voltage gain with very high input impedance (~1MΩ), preventing treble loss from cable capacitance and pickup loading. The tone is slightly warm and organic compared to op-amp buffers, with a subtle JFET character that many players find pleasing. The low-frequency rolloff is set by the coupling capacitor and keeps subsonic rumble out of the signal chain."
+}

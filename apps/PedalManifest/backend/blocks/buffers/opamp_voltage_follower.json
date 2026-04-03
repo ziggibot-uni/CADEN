@@ -1,0 +1,93 @@
+{
+  "id": "opamp_voltage_follower",
+  "transform": "buffer",
+  "topology": "Op-Amp Voltage Follower",
+  "components": [
+    {
+      "id": "U1",
+      "type": "op_amp",
+      "role": "Unity-gain buffer — 100% negative feedback for lowest distortion and output impedance",
+      "model": "TL071",
+      "substitutes": ["TL081", "OPA134", "NE5532", "LF353"],
+      "max_voltage": 36,
+      "max_current_ma": 25
+    },
+    {
+      "id": "Rb1",
+      "type": "resistor",
+      "role": "Bias voltage divider upper — creates Vcc/2 virtual ground reference",
+      "formula": "Vcc_total / (2 * Ibias_divider)",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 5
+    },
+    {
+      "id": "Rb2",
+      "type": "resistor",
+      "role": "Bias voltage divider lower — creates Vcc/2 virtual ground reference",
+      "formula": "Rb1",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 5
+    },
+    {
+      "id": "Cb",
+      "type": "capacitor",
+      "role": "Bias decoupling capacitor — stabilizes Vcc/2 reference, filters noise",
+      "formula": "100e-6",
+      "e_series": "E12",
+      "max_voltage": 25
+    },
+    {
+      "id": "Cin",
+      "type": "capacitor",
+      "role": "Input coupling capacitor — blocks DC, sets low-frequency rolloff",
+      "formula": "1 / (2 * pi * f_low * Rin)",
+      "e_series": "E12",
+      "max_voltage": 50
+    },
+    {
+      "id": "Cout",
+      "type": "capacitor",
+      "role": "Output coupling capacitor — blocks DC bias from output",
+      "formula": "1 / (2 * pi * f_low * Rload)",
+      "e_series": "E12",
+      "max_voltage": 50
+    },
+    {
+      "id": "Rin",
+      "type": "resistor",
+      "role": "Input resistor — provides DC path to bias point for non-inverting input",
+      "formula": "1e6",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 1
+    },
+    {
+      "id": "C_supply",
+      "type": "capacitor",
+      "role": "Power supply decoupling — filters supply noise",
+      "formula": "100e-9",
+      "e_series": "E12",
+      "max_voltage": 25
+    }
+  ],
+  "nodes": ["in", "out", "vcc", "gnd"],
+  "parameters": {
+    "f_low": { "min": 1, "max": 100, "default": 7, "unit": "Hz" },
+    "supply_voltage": { "min": 5, "max": 18, "default": 9, "unit": "V" }
+  },
+  "spice_template": ".subckt TL071_simple inp inn out vcc vee\nE1 out 0 inp inn 200000\n.ends\nXU1 noninv_in out out vcc vee TL071_simple\nRb1 vcc bias {{Rb1}}\nRb2 bias gnd {{Rb2}}\nCb bias gnd {{Cb}}\nRin in_ac bias {{Rin}}\nCin in in_ac {{Cin}}\nCout out out_ac {{Cout}}\nC_supply vcc gnd {{C_supply}}\nVcc vcc gnd DC {{Vcc}}",
+  "dsp_model": {
+    "type": "transfer_function",
+    "description": "Unity gain pass-through with negligible coloration; only the coupling caps affect frequency response",
+    "order": 1,
+    "gain_linear": 1.0,
+    "highpass_hz": "1 / (2 * pi * Cin * Rin)",
+    "parameters": {
+      "gain": 1.0,
+      "hp_cutoff_hz": 7
+    }
+  },
+  "behavioral_description": "The most transparent buffer option — an op-amp wired for unity gain with 100% negative feedback. Provides extremely low distortion, very low output impedance (< 1Ω), and very high input impedance (set by the input resistor, typically 1MΩ). The sound is clinical and uncolored, passing the signal with virtually no tonal change. Best used where absolute transparency is needed, such as at the start of a complex signal chain or before a sensitive tone-shaping stage. The only frequency shaping comes from the coupling capacitors."
+}

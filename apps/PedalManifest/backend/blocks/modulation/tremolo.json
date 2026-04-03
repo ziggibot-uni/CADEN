@@ -1,0 +1,180 @@
+{
+  "id": "tremolo",
+  "transform": "modulation",
+  "topology": "LFO-Driven JFET Tremolo",
+  "components": [
+    {
+      "id": "J1",
+      "type": "N_JFET",
+      "role": "Voltage-controlled attenuator — JFET in ohmic region modulates signal amplitude under LFO control",
+      "model": "J201",
+      "substitutes": ["2N5457", "2N5458", "MPF102"],
+      "max_voltage": 40,
+      "max_current_ma": 50
+    },
+    {
+      "id": "U1a",
+      "type": "op_amp",
+      "role": "LFO Schmitt trigger — generates square wave for LFO oscillation",
+      "model": "TL072",
+      "substitutes": ["NE5532", "OPA2134", "RC4558"],
+      "max_voltage": 36,
+      "max_current_ma": 25
+    },
+    {
+      "id": "U1b",
+      "type": "op_amp",
+      "role": "LFO integrator — converts square to triangle for smooth amplitude modulation",
+      "model": "TL072",
+      "substitutes": ["NE5532", "OPA2134", "RC4558"],
+      "max_voltage": 36,
+      "max_current_ma": 25
+    },
+    {
+      "id": "Rrate",
+      "type": "potentiometer",
+      "role": "Rate control — sets tremolo speed from slow pulse to fast warble",
+      "formula": "500e3",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 5
+    },
+    {
+      "id": "Rdepth",
+      "type": "potentiometer",
+      "role": "Depth control — sets the intensity of amplitude modulation from subtle to full chop",
+      "formula": "100e3",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 5
+    },
+    {
+      "id": "Cint",
+      "type": "capacitor",
+      "role": "LFO integrator capacitor — timing element for oscillation",
+      "formula": "100e-9",
+      "e_series": "E12",
+      "max_voltage": 25
+    },
+    {
+      "id": "Rint",
+      "type": "resistor",
+      "role": "LFO integrator input resistor",
+      "formula": "10e3",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 5
+    },
+    {
+      "id": "Rh1",
+      "type": "resistor",
+      "role": "Schmitt trigger hysteresis upper",
+      "formula": "10e3",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 5
+    },
+    {
+      "id": "Rh2",
+      "type": "resistor",
+      "role": "Schmitt trigger hysteresis lower",
+      "formula": "10e3",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 5
+    },
+    {
+      "id": "Rin",
+      "type": "resistor",
+      "role": "Signal input resistor — forms voltage divider with JFET Rds for amplitude modulation",
+      "formula": "10e3",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 10
+    },
+    {
+      "id": "Rbias_lfo",
+      "type": "resistor",
+      "role": "LFO-to-JFET bias scaling — maps LFO voltage range to JFET gate control range",
+      "formula": "47e3",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 5
+    },
+    {
+      "id": "Cin",
+      "type": "capacitor",
+      "role": "Input coupling capacitor",
+      "formula": "100e-9",
+      "e_series": "E12",
+      "max_voltage": 50
+    },
+    {
+      "id": "Cout",
+      "type": "capacitor",
+      "role": "Output coupling capacitor",
+      "formula": "100e-9",
+      "e_series": "E12",
+      "max_voltage": 50
+    },
+    {
+      "id": "Clfo_filter",
+      "type": "capacitor",
+      "role": "LFO smoothing cap — rounds triangle edges for softer modulation",
+      "formula": "10e-9",
+      "e_series": "E12",
+      "max_voltage": 25
+    },
+    {
+      "id": "Rb1",
+      "type": "resistor",
+      "role": "Bias divider upper",
+      "formula": "47e3",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 5
+    },
+    {
+      "id": "Rb2",
+      "type": "resistor",
+      "role": "Bias divider lower",
+      "formula": "47e3",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 5
+    },
+    {
+      "id": "Cb",
+      "type": "capacitor",
+      "role": "Bias decoupling",
+      "formula": "100e-6",
+      "e_series": "E12",
+      "max_voltage": 25
+    }
+  ],
+  "nodes": ["in", "out", "vcc", "gnd"],
+  "parameters": {
+    "rate_hz": { "min": 0.5, "max": 15, "default": 4, "unit": "Hz" },
+    "depth_percent": { "min": 0, "max": 100, "default": 60, "unit": "%" },
+    "waveform": { "options": ["triangle", "square", "sine_approx"], "default": "triangle" },
+    "supply_voltage": { "min": 5, "max": 18, "default": 9, "unit": "V" }
+  },
+  "spice_template": ".model J201_mod NJF(Vto=-0.8 Beta=1.4e-3 Lambda=2e-3 Is=1e-14)\n.subckt TL072_model inp inn out vcc vee\nE1 mid 0 inp inn 200000\nR1 mid out 100\n.ends\n* LFO - Schmitt trigger\nXU1a tri_fb schmitt_inv sq_out vcc vee TL072_model\nRh1 sq_out tri_fb {{Rh1}}\nRh2 tri_fb bias {{Rh2}}\n* LFO - Integrator\nXU1b bias int_inv tri_out vcc vee TL072_model\nRint sq_out rate_node {{Rint}}\nRrate rate_node int_inv {{Rrate}}\nCint int_inv tri_out {{Cint}}\n* Depth control\nRdepth tri_out depth_wiper {{Rdepth}}\nClfo_filter depth_wiper gnd {{Clfo_filter}}\n* LFO to JFET gate\nRbias_lfo depth_wiper gate {{Rbias_lfo}}\n* Signal path - JFET VCA\nCin in in_ac {{Cin}}\nRin in_ac drain {{Rin}}\nJ1 drain gate source J201_mod\nR_source source gnd 1k\nCout drain out {{Cout}}\n* Bias\nRb1 vcc bias {{Rb1}}\nRb2 bias gnd {{Rb2}}\nCb bias gnd {{Cb}}\nVcc vcc gnd DC {{Vcc}}",
+  "dsp_model": {
+    "type": "lfo_modulator",
+    "description": "LFO-driven amplitude modulation; LFO waveform modulates a variable gain element between unity and full attenuation",
+    "modulation_type": "amplitude_modulation",
+    "chain": [
+      { "type": "lfo", "waveform": "triangle", "rate_hz": 4, "depth": 0.6 },
+      { "type": "amplitude_modulator", "function": "signal * (1 - depth * lfo)", "min_gain": 0.0, "max_gain": 1.0 }
+    ],
+    "parameters": {
+      "rate_hz": 4,
+      "depth_percent": 60,
+      "waveform": "triangle",
+      "modulation_function": "output = input * (1.0 - depth * (0.5 + 0.5 * lfo_normalized))",
+      "lfo_range": [-1, 1]
+    }
+  },
+  "behavioral_description": "A JFET-based tremolo that rhythmically varies the signal amplitude under LFO control. The JFET operates as a voltage-controlled resistor, forming a variable attenuator that the LFO sweeps between full signal pass-through and near-complete attenuation. With a triangle LFO waveform, the modulation is smooth and sinusoidal-like, producing a gentle pulsing. With a square wave LFO, the effect becomes a hard chop — signal fully on, then fully off — for a more dramatic, staccato effect. The rate control sweeps from slow, hypnotic throb (0.5Hz) to fast, Leslie-like warble (15Hz). The depth control sets how much the volume dips — subtle depth (20-30%) adds gentle movement and life, while maximum depth (100%) produces full kill-volume pulsing. The JFET attenuator adds a slight warmth and second-harmonic coloration to the modulated signal. This is the classic tremolo topology found in many boutique pedals and vintage amplifiers."
+}

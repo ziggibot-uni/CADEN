@@ -1,0 +1,45 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg-primary: var(--caden-bg-primary, #0f0f14);
+  --bg-secondary: var(--caden-bg-secondary, #1a1a24);
+  --bg-tertiary: var(--caden-bg-tertiary, #252530);
+  --text-primary: var(--caden-text-primary, #e8e8f0);
+  --text-secondary: var(--caden-text-secondary, #9090a8);
+  --accent: var(--caden-accent, #7c5cbf);
+  --accent-hover: var(--caden-accent-hover, #9370db);
+  --success: #4ade80;
+  --error: #f87171;
+  --border: var(--caden-border, #2a2a3a);
+}
+
+body {
+  margin: 0;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: 'Segoe UI', system-ui, sans-serif;
+}
+
+#root {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.scrollbar-thin::-webkit-scrollbar {
+  width: 6px;
+}
+.scrollbar-thin::-webkit-scrollbar-track {
+  background: transparent;
+}
+.scrollbar-thin::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 3px;
+}
+
+pre, code {
+  font-family: 'Cascadia Code', 'Fira Code', monospace;
+  font-size: 0.85em;
+}

@@ -1,0 +1,6 @@
+{
+  "name": "Projects",
+  "install_command": "npm install",
+  "dev_command": "npm run dev",
+  "port": 5173
+}

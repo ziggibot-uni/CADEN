@@ -1,0 +1,142 @@
+{
+  "id": "germanium_fuzz",
+  "transform": "clipping",
+  "topology": "Two-Stage Germanium PNP Fuzz",
+  "components": [
+    {
+      "id": "Q1",
+      "type": "PNP_BJT",
+      "role": "First gain stage — germanium PNP provides initial gain with soft, warm clipping characteristics",
+      "model": "AC128",
+      "substitutes": ["AC125", "AC176", "NKT275", "OC44", "2N527"],
+      "max_voltage": 32,
+      "max_current_ma": 100
+    },
+    {
+      "id": "Q2",
+      "type": "PNP_BJT",
+      "role": "Second gain stage — driven into saturation for main fuzz tone, germanium provides soft clipping knee",
+      "model": "AC128",
+      "substitutes": ["AC125", "AC176", "NKT275", "OC44", "2N527"],
+      "max_voltage": 32,
+      "max_current_ma": 100
+    },
+    {
+      "id": "Rc1",
+      "type": "resistor",
+      "role": "Q1 collector resistor — note: PNP topology uses negative supply convention",
+      "formula": "(Vcc - Vce_sat) / Ic1",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 10
+    },
+    {
+      "id": "Re1",
+      "type": "resistor",
+      "role": "Q1 emitter resistor — thermal stability for temperature-sensitive germanium",
+      "formula": "1e3",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 10
+    },
+    {
+      "id": "Rb1",
+      "type": "resistor",
+      "role": "Q1 base bias — high value for bias stability with leaky germanium",
+      "formula": "100e3",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 5
+    },
+    {
+      "id": "Rc2",
+      "type": "resistor",
+      "role": "Q2 collector resistor",
+      "formula": "(Vcc - Vce_sat) / Ic2",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 10
+    },
+    {
+      "id": "Rb2",
+      "type": "resistor",
+      "role": "Q2 base bias — coupled from Q1 collector",
+      "formula": "8.2e3",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 5
+    },
+    {
+      "id": "Rfuzz",
+      "type": "potentiometer",
+      "role": "Fuzz control — adjusts feedback between Q2 collector and Q1 base",
+      "formula": "1e3",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 10
+    },
+    {
+      "id": "Rbias",
+      "type": "resistor",
+      "role": "Bias trim resistor — compensates for germanium transistor leakage variation",
+      "formula": "varies_with_transistor_leakage",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 5
+    },
+    {
+      "id": "Cin",
+      "type": "capacitor",
+      "role": "Input coupling — larger value than silicon fuzz for more bass content",
+      "formula": "2.2e-6",
+      "e_series": "E12",
+      "max_voltage": 50
+    },
+    {
+      "id": "Cout",
+      "type": "capacitor",
+      "role": "Output coupling capacitor",
+      "formula": "10e-6",
+      "e_series": "E12",
+      "max_voltage": 25
+    },
+    {
+      "id": "Rvol",
+      "type": "potentiometer",
+      "role": "Output volume control",
+      "formula": "500e3",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 1
+    }
+  ],
+  "nodes": ["in", "out", "vcc", "gnd"],
+  "parameters": {
+    "fuzz_amount": { "min": 0, "max": 100, "default": 70, "unit": "%" },
+    "volume": { "min": 0, "max": 100, "default": 50, "unit": "%" },
+    "bias_point": { "min": -4.5, "max": -1.0, "default": -3.0, "unit": "V" },
+    "supply_voltage": { "min": 5, "max": 9, "default": 9, "unit": "V" }
+  },
+  "spice_template": ".model AC128_mod PNP(Is=1.41u Bf=70 Br=1 Rb=100 Rc=10 Re=1\n+   Cjc=25p Cje=35p Vje=0.3 Mje=0.5 Vjc=0.5 Mjc=0.5\n+   Tf=0.5n Tr=50n Ise=1.41u Ne=1.5 Ikf=0.1)\nQ1 c1 b1 e1 AC128_mod\nQ2 c2 b2 e2 AC128_mod\nRc1 gnd c1 {{Rc1}}\nRe1 vcc e1 {{Re1}}\nRb1 gnd b1 {{Rb1}}\nRc2 gnd c2 {{Rc2}}\nRe2 vcc e2 1\nRb2 c1 b2 {{Rb2}}\nRfuzz c2 b1 {{Rfuzz}}\nRbias vcc b1 {{Rbias}}\nCin in b1 {{Cin}}\nCout c2 vol_wiper {{Cout}}\nRvol vol_wiper gnd {{Rvol}}\nVcc vcc gnd DC -{{Vcc}}",
+  "dsp_model": {
+    "type": "waveshaper",
+    "description": "High gain cascaded stages with softer clipping knee than silicon; includes sag/gating behavior from bias sensitivity",
+    "nonlinearity_type": "soft_hard_clip_with_sag",
+    "chain": [
+      { "type": "highpass", "order": 1, "cutoff_hz": 30 },
+      { "type": "gain", "gain_db": 55 },
+      { "type": "waveshaper", "function": "tanh(x / 0.15) * 0.15 + 0.05 * x", "threshold_v": 0.15, "symmetry": "slightly_asymmetric" },
+      { "type": "lowpass", "order": 2, "cutoff_hz": 4000 },
+      { "type": "gate", "threshold_db": -50, "release_ms": 80 }
+    ],
+    "parameters": {
+      "total_gain_db": 55,
+      "clip_threshold_v": 0.15,
+      "lp_cutoff_hz": 4000,
+      "sag_enabled": true,
+      "gate_threshold_db": -50,
+      "temperature_sensitivity": "high"
+    }
+  },
+  "behavioral_description": "The classic vintage germanium fuzz sound — warm, woolly, sputtery, and deeply musical. Germanium PNP transistors (like the AC128) have lower gain and a softer clipping characteristic than silicon, producing a smoother, more rounded distortion with less harsh upper harmonics. The sound is thick and dark with a characteristic sag — as the signal decays, the bias point shifts and the fuzz can gate abruptly, creating that famous 'velcro' dying note texture. Germanium transistors are notoriously temperature-sensitive; the bias point drifts with heat, which some players consider part of the charm (the pedal literally sounds different as it warms up). The PNP topology means the circuit runs on negative ground, which can complicate power supply daisy-chaining. This is the sound of Hendrix's Fuzz Face, the tone that defined psychedelic rock."
+}

@@ -39,7 +39,7 @@ export function FirstRunWizard({ onComplete }: Props) {
     setPullProgress("Starting…");
     setError(null);
     try {
-      await invoke("pull_ollama_model", { model: "llama3.1:8b" });
+      await invoke("pull_ollama_model", { model: "qwen3:14b" });
       setStep("google_auth");
     } catch (err) {
       setError(`Pull failed: ${err}`);
@@ -136,13 +136,13 @@ export function FirstRunWizard({ onComplete }: Props) {
         {step === "ollama_pull" && (
           <WizardStep
             title="Pulling the model"
-            body="Downloading llama3.1:8b (~4.7GB). This only happens once."
+            body="Downloading qwen2.5-coder:7b (~4.7GB). This only happens once."
             extra={
               pullProgress ? (
                 <div className="text-xs text-text-muted font-mono">{pullProgress}</div>
               ) : null
             }
-            primaryLabel={pulling ? "Pulling…" : "Download llama3.1:8b"}
+            primaryLabel={pulling ? "Pulling…" : "Download qwen2.5-coder:7b"}
             onPrimary={pullModel}
             primaryDisabled={pulling}
             error={error}
@@ -181,7 +181,7 @@ export function FirstRunWizard({ onComplete }: Props) {
                   onChange={(e) => setMoodleToken(e.target.value)}
                 />
                 {moodleError && (
-                  <div className="text-[#c0392b] text-xs">{moodleError}</div>
+                  <div className="text-urgency-high text-xs">{moodleError}</div>
                 )}
               </div>
             }
@@ -242,7 +242,7 @@ function WizardStep({
         <p className="text-sm text-text-muted mt-2 leading-relaxed">{body}</p>
       </div>
       {extra}
-      {error && <div className="text-[#c0392b] text-sm">{error}</div>}
+      {error && <div className="text-urgency-high text-sm">{error}</div>}
       <div className="flex items-center gap-3">
         <button
           className="btn-primary text-sm"

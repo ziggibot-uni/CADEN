@@ -1,0 +1,105 @@
+{
+  "id": "marshall_tonestack",
+  "transform": "filter",
+  "topology": "Marshall-Style Passive Tonestack",
+  "components": [
+    {
+      "id": "Rbass",
+      "type": "potentiometer",
+      "role": "Bass control — 1MA log pot (higher value than Fender for more bass range)",
+      "formula": "1e6",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 5
+    },
+    {
+      "id": "Rmid",
+      "type": "potentiometer",
+      "role": "Mid control — 25kA log pot; controls the mid scoop depth",
+      "formula": "25e3",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 5
+    },
+    {
+      "id": "Rtreble",
+      "type": "potentiometer",
+      "role": "Treble control — 250kA log pot",
+      "formula": "250e3",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 5
+    },
+    {
+      "id": "R1",
+      "type": "resistor",
+      "role": "Slope resistor — 33k in Marshall (vs 100k in Fender) shifts frequency interactions",
+      "formula": "33e3",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 5
+    },
+    {
+      "id": "C1",
+      "type": "capacitor",
+      "role": "Treble cap — 470pF (larger than Fender 250pF) for slightly lower treble turnover",
+      "formula": "470e-12",
+      "e_series": "E12",
+      "max_voltage": 50
+    },
+    {
+      "id": "C2",
+      "type": "capacitor",
+      "role": "Bass cap — 22nF, sets bass turnover frequency",
+      "formula": "22e-9",
+      "e_series": "E12",
+      "max_voltage": 50
+    },
+    {
+      "id": "C3",
+      "type": "capacitor",
+      "role": "Mid cap — 22nF, sets mid scoop center frequency",
+      "formula": "22e-9",
+      "e_series": "E12",
+      "max_voltage": 50
+    },
+    {
+      "id": "R2",
+      "type": "resistor",
+      "role": "Treble bleed resistor — present in some Marshall variants for minimum treble level",
+      "formula": "56e3",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 5
+    }
+  ],
+  "nodes": ["in", "out", "gnd"],
+  "parameters": {
+    "bass": { "min": 0, "max": 10, "default": 5, "unit": "" },
+    "mid": { "min": 0, "max": 10, "default": 5, "unit": "" },
+    "treble": { "min": 0, "max": 10, "default": 5, "unit": "" },
+    "insertion_loss_db": { "min": -18, "max": -6, "default": -14, "unit": "dB" }
+  },
+  "spice_template": "C1 in treble_wiper {{C1}}\nRtreble_a in treble_wiper {{Rtreble_a}}\nRtreble_b treble_wiper out {{Rtreble_b}}\nR1 treble_wiper mid1 {{R1}}\nR2 in out {{R2}}\nC2 mid1 gnd {{C2}}\nRbass_a mid1 bass_gnd {{Rbass_a}}\nRbass_b bass_gnd gnd {{Rbass_b}}\nRmid_a out mid_gnd {{Rmid_a}}\nRmid_b mid_gnd gnd {{Rmid_b}}\nC3 mid_gnd gnd {{C3}}",
+  "dsp_model": {
+    "type": "transfer_function",
+    "description": "Marshall-voiced 3-band passive EQ — similar topology to Fender but with different component values for a more aggressive voicing",
+    "order": 3,
+    "filter_type": "parametric_3band",
+    "implementation": "biquad_cascade_approximation",
+    "chain": [
+      { "type": "gain", "gain_db": -14 },
+      { "type": "low_shelf", "order": 1, "freq_hz": 150, "gain_db": "bass_curve" },
+      { "type": "peaking", "order": 2, "freq_hz": 700, "gain_db": "mid_curve", "Q": 1.0 },
+      { "type": "high_shelf", "order": 1, "freq_hz": 1800, "gain_db": "treble_curve" }
+    ],
+    "parameters": {
+      "bass_shelf_hz": 150,
+      "mid_center_hz": 700,
+      "mid_Q": 1.0,
+      "treble_shelf_hz": 1800,
+      "insertion_loss_db": -14
+    }
+  },
+  "behavioral_description": "The Marshall tonestack shares the same basic topology as the Fender but with component values tuned for a more aggressive, mid-forward voicing. Key differences: the bass pot is 1MΩ (vs 250kΩ) giving more bass range, the slope resistor is 33kΩ (vs 100kΩ) changing the interaction between controls, and the treble cap is 470pF (vs 250pF) shifting the treble response slightly lower. The result is a tonestack that naturally emphasizes the upper midrange — the 'growl zone' around 600-1000Hz — even when all controls are at noon. The mid scoop is shallower than the Fender, keeping more midrange presence, which is why Marshalls cut through a band mix more aggressively. With mids cranked and treble moderate, this produces the classic British crunch tone. Some Marshall variants include a treble bleed resistor that ensures a minimum amount of treble always passes through."
+}

@@ -1,0 +1,93 @@
+{
+  "id": "jfet_common_source",
+  "transform": "gain",
+  "topology": "JFET Common Source Amplifier",
+  "components": [
+    {
+      "id": "J1",
+      "type": "N_JFET",
+      "role": "Common source gain transistor — provides voltage gain with high input impedance and JFET tonal character",
+      "model": "J201",
+      "substitutes": ["2N5457", "2N5458", "MMBFJ201", "MPF102"],
+      "max_voltage": 40,
+      "max_current_ma": 50
+    },
+    {
+      "id": "Rd",
+      "type": "resistor",
+      "role": "Drain resistor — converts drain current into output voltage, sets gain with Rs",
+      "formula": "(Vcc - Vds) / Id",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 20
+    },
+    {
+      "id": "Rs",
+      "type": "resistor",
+      "role": "Source resistor — self-bias for JFET, sets operating point via Vgs = -Id * Rs",
+      "formula": "abs(Vgs_target) / Id",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 20
+    },
+    {
+      "id": "Rg",
+      "type": "resistor",
+      "role": "Gate resistor — sets input impedance, provides DC return path",
+      "formula": "1e6",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 1
+    },
+    {
+      "id": "Cin",
+      "type": "capacitor",
+      "role": "Input coupling capacitor — blocks DC from gate",
+      "formula": "1 / (2 * pi * f_low * Rg)",
+      "e_series": "E12",
+      "max_voltage": 50
+    },
+    {
+      "id": "Cout",
+      "type": "capacitor",
+      "role": "Output coupling capacitor — blocks drain DC from output",
+      "formula": "1 / (2 * pi * f_low * Rload)",
+      "e_series": "E12",
+      "max_voltage": 50
+    },
+    {
+      "id": "Cs",
+      "type": "capacitor",
+      "role": "Source bypass capacitor — increases AC gain by bypassing source resistor at audio frequencies",
+      "formula": "1 / (2 * pi * f_bypass * Rs)",
+      "e_series": "E12",
+      "max_voltage": 25
+    }
+  ],
+  "nodes": ["in", "out", "vcc", "gnd"],
+  "parameters": {
+    "gain_db": { "min": 6, "max": 20, "default": 14, "unit": "dB" },
+    "f_low": { "min": 5, "max": 200, "default": 20, "unit": "Hz" },
+    "f_bypass": { "min": 50, "max": 5000, "default": 150, "unit": "Hz" },
+    "bias_current_ma": { "min": 0.3, "max": 3, "default": 0.8, "unit": "mA" },
+    "supply_voltage": { "min": 5, "max": 18, "default": 9, "unit": "V" }
+  },
+  "spice_template": ".model J201_mod NJF(Vto=-0.8 Beta=1.4e-3 Lambda=2e-3 Is=1e-14 Cgd=4.5p Cgs=4.5p)\nJ1 drain gate source J201_mod\nRd vcc drain {{Rd}}\nRs source gnd {{Rs}}\nRg gate gnd {{Rg}}\nCin in gate {{Cin}}\nCout drain out {{Cout}}\nCs source gnd {{Cs}}\nVcc vcc gnd DC {{Vcc}}",
+  "dsp_model": {
+    "type": "transfer_function",
+    "description": "Highpass into moderate gain with slightly lower bandwidth than BJT, producing a warmer tone",
+    "order": 2,
+    "chain": [
+      { "type": "highpass", "order": 1, "cutoff_hz": "1 / (2 * pi * Cin * Rg)" },
+      { "type": "gain", "gain_db": "20 * log10(gm * Rd)" },
+      { "type": "lowpass", "order": 1, "cutoff_hz": 100000 }
+    ],
+    "parameters": {
+      "gain_db": 14,
+      "hp_cutoff_hz": 20,
+      "lp_cutoff_hz": 100000,
+      "phase_inversion": true
+    }
+  },
+  "behavioral_description": "A JFET common source amplifier with a distinctly musical character. JFETs produce predominantly second-harmonic distortion when driven, which sounds warm and tube-like — this is the topology behind many beloved overdrive and boost pedals. The gain is more modest than a BJT stage (typically 6-20dB) but the tonal color is prized. The high input impedance (~1MΩ) preserves pickup resonance and brightness. When the source bypass cap is reduced or removed, the gain drops and the tone becomes cleaner and more open. This stage responds dynamically to picking strength, cleaning up beautifully with softer playing."
+}

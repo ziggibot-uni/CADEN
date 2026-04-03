@@ -1,0 +1,142 @@
+{
+  "id": "jfet_gain_cell",
+  "transform": "dynamics",
+  "topology": "JFET Voltage-Controlled Resistor Gain Cell",
+  "components": [
+    {
+      "id": "J1",
+      "type": "N_JFET",
+      "role": "Voltage-controlled resistor — JFET operated in its ohmic/triode region acts as a variable resistor controlled by Vgs",
+      "model": "2N5457",
+      "substitutes": ["J201", "2N5458", "MPF102", "2N3819"],
+      "max_voltage": 25,
+      "max_current_ma": 30
+    },
+    {
+      "id": "U1",
+      "type": "op_amp",
+      "role": "Envelope detector — rectifies and smooths input signal to generate JFET control voltage",
+      "model": "TL071",
+      "substitutes": ["TL081", "NE5532", "LF353"],
+      "max_voltage": 36,
+      "max_current_ma": 25
+    },
+    {
+      "id": "D1",
+      "type": "diode",
+      "role": "Envelope rectifier diode",
+      "model": "1N4148",
+      "substitutes": ["1N914"],
+      "max_voltage": 75,
+      "max_current_ma": 200
+    },
+    {
+      "id": "Rin",
+      "type": "resistor",
+      "role": "Input/series resistor — forms voltage divider with JFET Rds to create variable attenuation",
+      "formula": "matched_to_Rds_range",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 10
+    },
+    {
+      "id": "Renv_in",
+      "type": "resistor",
+      "role": "Envelope detector input resistor",
+      "formula": "100e3",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 5
+    },
+    {
+      "id": "Cenv",
+      "type": "capacitor",
+      "role": "Envelope smoothing — sets attack/release time constant",
+      "formula": "10e-6",
+      "e_series": "E12",
+      "max_voltage": 25
+    },
+    {
+      "id": "Rattack",
+      "type": "resistor",
+      "role": "Attack time resistor — in series with diode for charging Cenv",
+      "formula": "attack_ms * 1e-3 / Cenv",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 5
+    },
+    {
+      "id": "Rrelease",
+      "type": "resistor",
+      "role": "Release time resistor — discharge path for Cenv",
+      "formula": "release_ms * 1e-3 / Cenv",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 5
+    },
+    {
+      "id": "Rsustain",
+      "type": "potentiometer",
+      "role": "Sustain/sensitivity control — scales the control voltage applied to the JFET gate",
+      "formula": "500e3",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 5
+    },
+    {
+      "id": "Cin",
+      "type": "capacitor",
+      "role": "Input coupling — blocks DC from JFET drain",
+      "formula": "100e-9",
+      "e_series": "E12",
+      "max_voltage": 50
+    },
+    {
+      "id": "Cout",
+      "type": "capacitor",
+      "role": "Output coupling capacitor",
+      "formula": "100e-9",
+      "e_series": "E12",
+      "max_voltage": 50
+    },
+    {
+      "id": "Rlevel",
+      "type": "potentiometer",
+      "role": "Output level control",
+      "formula": "100e3",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 5
+    }
+  ],
+  "nodes": ["in", "out", "vcc", "gnd", "cv_in"],
+  "parameters": {
+    "attack_ms": { "min": 1, "max": 100, "default": 10, "unit": "ms" },
+    "release_ms": { "min": 50, "max": 1000, "default": 200, "unit": "ms" },
+    "sustain": { "min": 0, "max": 100, "default": 50, "unit": "%" },
+    "level": { "min": 0, "max": 100, "default": 70, "unit": "%" },
+    "jfet_rds_range_ohm": { "min": 100, "max": 10000, "default": 1000, "unit": "ohm" },
+    "supply_voltage": { "min": 5, "max": 18, "default": 9, "unit": "V" }
+  },
+  "spice_template": ".model J2N5457 NJF(Vto=-1.8 Beta=5e-4 Lambda=4e-3 Is=1e-14 Cgd=3p Cgs=3p)\n.model D1N4148 D(Is=2.52n Rs=.568 N=1.752 Bv=100 Ibv=100u Cjo=4p)\n* JFET VCR attenuator\nCin in drain_ac {{Cin}}\nRin drain_ac drain {{Rin}}\nJ1 drain gate source J2N5457\nR_source source gnd 100\nCout drain out_ac {{Cout}}\nRlevel out_ac out {{Rlevel}}\n* Envelope detector\n.subckt TL071_model inp inn out vcc vee\nE1 mid 0 inp inn 200000\nR1 mid out 100\n.ends\nXU1 in env_inv env_out vcc vee TL071_model\nRenv_in in env_inv {{Renv_in}}\nD1 env_out env_rect D1N4148\nRattack env_rect env_cap {{Rattack}}\nRrelease env_cap gnd {{Rrelease}}\nCenv env_cap gnd {{Cenv}}\nRsustain env_cap gate {{Rsustain}}\nVcc vcc gnd DC {{Vcc}}",
+  "dsp_model": {
+    "type": "transfer_function",
+    "description": "Envelope-controlled variable attenuator; JFET Rds changes with gate voltage to create compression",
+    "dynamics_type": "compressor",
+    "chain": [
+      { "type": "envelope_follower", "attack_ms": 10, "release_ms": 200, "detection": "peak" },
+      { "type": "gain_computer", "threshold_dbv": -25, "ratio": 3, "knee_db": 10 },
+      { "type": "variable_attenuator", "attenuation_range_db": [-30, 0], "control": "jfet_rds_curve" },
+      { "type": "makeup_gain", "gain_db": "level" }
+    ],
+    "parameters": {
+      "attack_ms": 10,
+      "release_ms": 200,
+      "threshold_dbv": -25,
+      "ratio": 3,
+      "knee_db": 10,
+      "distortion_note": "JFET VCR adds second-harmonic distortion proportional to signal amplitude"
+    }
+  },
+  "behavioral_description": "A JFET operated in its ohmic region as a voltage-controlled resistor, forming a variable attenuator for compression. The JFET's drain-source resistance (Rds) varies smoothly from a few hundred ohms (gate at 0V) to near-infinite (gate at pinch-off), controlled by the envelope-detected signal at the gate. This creates a natural, organic compression with a very soft knee — the transition from unity gain to compression is gradual and musical. The JFET VCR introduces slight second-harmonic distortion that increases with signal level, which adds warmth and character that many players prefer over cleaner VCA-based compressors. This topology can also accept an external CV input, making it useful as a voltage-controlled attenuator for tremolo, ducking, or sidechain effects. The compression character is similar to optical compressors — smooth and unobtrusive."
+}

@@ -1,0 +1,117 @@
+{
+  "id": "gyrator_mid_boost",
+  "transform": "filter",
+  "topology": "Op-Amp Gyrator Mid-Frequency Boost",
+  "components": [
+    {
+      "id": "U1",
+      "type": "op_amp",
+      "role": "Gyrator amplifier — simulates an inductor using capacitor and resistor feedback to create a resonant bandpass",
+      "model": "TL071",
+      "substitutes": ["TL081", "OPA134", "NE5532", "RC4558"],
+      "max_voltage": 36,
+      "max_current_ma": 25
+    },
+    {
+      "id": "R1",
+      "type": "resistor",
+      "role": "Input/series resistor — sets the bandwidth and boost amount of the resonant peak",
+      "formula": "Q / (2 * pi * fc * C1)",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 10
+    },
+    {
+      "id": "R2",
+      "type": "resistor",
+      "role": "Gyrator resistor — with C1, simulates inductance L = R2 * C1 * R3",
+      "formula": "1 / (2 * pi * fc * C1)",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 10
+    },
+    {
+      "id": "R3",
+      "type": "resistor",
+      "role": "Gyrator ground resistor — sets the equivalent inductance value",
+      "formula": "R2",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 10
+    },
+    {
+      "id": "C1",
+      "type": "capacitor",
+      "role": "Gyrator capacitor — core of the simulated inductor",
+      "formula": "1 / (2 * pi * fc * R2)",
+      "e_series": "E12",
+      "max_voltage": 50
+    },
+    {
+      "id": "Rboost",
+      "type": "potentiometer",
+      "role": "Boost amount control — varies the depth of the mid-frequency peak",
+      "formula": "10e3",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 5
+    },
+    {
+      "id": "Rfreq",
+      "type": "potentiometer",
+      "role": "Frequency control — tunes the center frequency of the boost (optional, replaces R2)",
+      "formula": "50e3",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 5
+    },
+    {
+      "id": "Rb1",
+      "type": "resistor",
+      "role": "Bias divider upper",
+      "formula": "47e3",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 5
+    },
+    {
+      "id": "Rb2",
+      "type": "resistor",
+      "role": "Bias divider lower",
+      "formula": "47e3",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 5
+    },
+    {
+      "id": "Cb",
+      "type": "capacitor",
+      "role": "Bias decoupling",
+      "formula": "100e-6",
+      "e_series": "E12",
+      "max_voltage": 25
+    }
+  ],
+  "nodes": ["in", "out", "vcc", "gnd"],
+  "parameters": {
+    "center_freq_hz": { "min": 200, "max": 5000, "default": 800, "unit": "Hz" },
+    "boost_db": { "min": 0, "max": 15, "default": 6, "unit": "dB" },
+    "Q": { "min": 0.5, "max": 5.0, "default": 1.5, "unit": "" },
+    "supply_voltage": { "min": 5, "max": 18, "default": 9, "unit": "V" }
+  },
+  "spice_template": ".subckt TL071_model inp inn out vcc vee\nE1 mid 0 inp inn 200000\nR1x mid out 100\n.ends\nXU1 noninv inv out vcc vee TL071_model\nR1 in mid1 {{R1}}\nR2 mid1 inv {{R2}}\nC1 inv out {{C1}}\nR3 out bias {{R3}}\nRboost mid1 out {{Rboost}}\nRb1 vcc bias {{Rb1}}\nRb2 bias gnd {{Rb2}}\nCb bias gnd {{Cb}}\nVcc vcc gnd DC {{Vcc}}",
+  "dsp_model": {
+    "type": "state_variable",
+    "description": "Parametric EQ band — second-order bandpass/peaking filter centered at tunable mid frequency",
+    "filter_type": "peaking_eq",
+    "implementation": "biquad_peaking",
+    "transfer_function": "H(s) = (s^2 + s*(wc/Q)*G + wc^2) / (s^2 + s*wc/Q + wc^2)",
+    "parameters": {
+      "center_freq_hz": 800,
+      "boost_db": 6,
+      "Q": 1.5,
+      "type": "peaking"
+    }
+  },
+  "behavioral_description": "A gyrator-based mid-frequency boost that uses an op-amp to simulate an inductor, creating a resonant peak at a tunable center frequency. This is the heart of many parametric EQ pedals and mid-boost circuits. The gyrator avoids the size, weight, and cost of a real inductor while providing equivalent resonant behavior. The center frequency can be swept from low-mids (200Hz — thick, chunky) through upper-mids (2-5kHz — cutting, present). The Q parameter controls bandwidth: low Q gives a broad, gentle boost across a wide range; high Q gives a narrow, focused peak that can make a guitar voice cut through a dense mix. This is essential for sculpting overdrive and distortion tones, pushing specific frequency ranges into clipping while leaving others clean."
+}

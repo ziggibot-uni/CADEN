@@ -1,0 +1,62 @@
+{
+  "id": "presence_control",
+  "transform": "filter",
+  "topology": "High-Shelf Presence Control",
+  "components": [
+    {
+      "id": "R1",
+      "type": "resistor",
+      "role": "Series resistor — sets the transition frequency with C1",
+      "formula": "1 / (2 * pi * fc * C1)",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 10
+    },
+    {
+      "id": "C1",
+      "type": "capacitor",
+      "role": "Shelf capacitor — bypasses R1 at high frequencies, creating the shelf boost/cut",
+      "formula": "1 / (2 * pi * fc * R1)",
+      "e_series": "E12",
+      "max_voltage": 50
+    },
+    {
+      "id": "Rpresence",
+      "type": "potentiometer",
+      "role": "Presence pot — controls the amount of high-frequency shelf boost or cut",
+      "formula": "25e3",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 5
+    },
+    {
+      "id": "R2",
+      "type": "resistor",
+      "role": "Load/termination resistor — sets the shelf depth range",
+      "formula": "10e3",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 10
+    }
+  ],
+  "nodes": ["in", "out", "gnd"],
+  "parameters": {
+    "shelf_freq_hz": { "min": 1000, "max": 8000, "default": 3000, "unit": "Hz" },
+    "boost_cut_db": { "min": -10, "max": 10, "default": 0, "unit": "dB" }
+  },
+  "spice_template": "R1 in mid {{R1}}\nC1 in mid_c {{C1}}\nRpresence mid_c mid {{Rpresence}}\nR2 mid gnd {{R2}}",
+  "dsp_model": {
+    "type": "transfer_function",
+    "description": "First-order high-shelf filter — boosts or cuts all frequencies above the shelf frequency",
+    "order": 1,
+    "filter_type": "high_shelf",
+    "implementation": "first_order_shelf",
+    "transfer_function": "H(s) = (s + wz) / (s + wp)",
+    "parameters": {
+      "shelf_freq_hz": 3000,
+      "gain_db": 0,
+      "type": "high_shelf"
+    }
+  },
+  "behavioral_description": "A simple but effective high-shelf tone control that boosts or cuts the presence range (typically 2-5kHz and above). At full clockwise, frequencies above the shelf point are boosted, adding sparkle, clarity, and cutting power. At full counter-clockwise, the highs are attenuated, producing a darker, smoother tone. The transition is gradual (first-order shelf), so there is no abrupt frequency step. This is the classic 'presence' control found on many amplifiers and overdrive pedals. It is particularly useful after distortion stages to dial in the right amount of treble energy — too much sounds harsh and fizzy, too little sounds dull and buried. A well-tuned presence control makes the difference between a great-sounding drive and a mediocre one."
+}

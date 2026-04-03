@@ -1,0 +1,102 @@
+{
+  "id": "bjt_common_emitter",
+  "transform": "gain",
+  "topology": "BJT Common Emitter Amplifier",
+  "components": [
+    {
+      "id": "Q1",
+      "type": "NPN_BJT",
+      "role": "Common emitter gain transistor — provides voltage amplification",
+      "model": "2N3904",
+      "substitutes": ["BC549C", "2N2222", "BC547B", "MPSA18"],
+      "max_voltage": 40,
+      "max_current_ma": 200
+    },
+    {
+      "id": "Rc",
+      "type": "resistor",
+      "role": "Collector resistor — converts collector current variations into output voltage; sets voltage gain with Re",
+      "formula": "Vcc / (2 * Ic) - Re_unbypassed",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 20
+    },
+    {
+      "id": "Re",
+      "type": "resistor",
+      "role": "Emitter resistor — provides DC bias stability; unbypassed portion sets minimum gain",
+      "formula": "(Vcc - Vc) / Ic - Rc",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 20
+    },
+    {
+      "id": "Rb1",
+      "type": "resistor",
+      "role": "Upper bias divider resistor — sets base DC voltage",
+      "formula": "Vcc / (Ib * (1 + Rb2/Rb1_ratio))",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 5
+    },
+    {
+      "id": "Rb2",
+      "type": "resistor",
+      "role": "Lower bias divider resistor — sets base DC voltage",
+      "formula": "Rb1 * (Vb / (Vcc - Vb))",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 5
+    },
+    {
+      "id": "Cin",
+      "type": "capacitor",
+      "role": "Input coupling capacitor — blocks DC, sets input highpass cutoff",
+      "formula": "1 / (2 * pi * f_low * (Rb1 || Rb2 || (beta * Re)))",
+      "e_series": "E12",
+      "max_voltage": 50
+    },
+    {
+      "id": "Cout",
+      "type": "capacitor",
+      "role": "Output coupling capacitor — blocks collector DC from output",
+      "formula": "1 / (2 * pi * f_low * Rload)",
+      "e_series": "E12",
+      "max_voltage": 50
+    },
+    {
+      "id": "Ce",
+      "type": "capacitor",
+      "role": "Emitter bypass capacitor — boosts AC gain by shorting Re at audio frequencies; controls gain-frequency profile",
+      "formula": "1 / (2 * pi * f_bypass * Re)",
+      "e_series": "E12",
+      "max_voltage": 25
+    }
+  ],
+  "nodes": ["in", "out", "vcc", "gnd"],
+  "parameters": {
+    "gain_db": { "min": 6, "max": 40, "default": 20, "unit": "dB" },
+    "f_low": { "min": 5, "max": 200, "default": 20, "unit": "Hz" },
+    "f_bypass": { "min": 50, "max": 5000, "default": 100, "unit": "Hz" },
+    "bias_current_ma": { "min": 0.5, "max": 5, "default": 1, "unit": "mA" },
+    "supply_voltage": { "min": 5, "max": 18, "default": 9, "unit": "V" }
+  },
+  "spice_template": ".model Q2N3904 NPN(Is=6.734f Xti=3 Eg=1.11 Vaf=74.03 Bf=416.4 Ne=1.259\n+   Ise=6.734f Ikf=66.78m Xtb=1.5 Br=.7389 Nc=2 Isc=0 Ikr=0 Rc=1\n+   Cjc=3.638p Mjc=.3085 Vjc=.75 Fc=.5 Cje=4.493p Mje=.2593 Vje=.75\n+   Tr=239.5n Tf=301.2p Itf=.4 Vtf=4 Xtf=2 Rb=10)\nQ1 collector base emitter Q2N3904\nRc vcc collector {{Rc}}\nRe emitter gnd {{Re}}\nRb1 vcc base {{Rb1}}\nRb2 base gnd {{Rb2}}\nCin in base {{Cin}}\nCout collector out {{Cout}}\nCe emitter gnd {{Ce}}\nVcc vcc gnd DC {{Vcc}}",
+  "dsp_model": {
+    "type": "transfer_function",
+    "description": "First-order highpass (coupling cap) into voltage gain stage with first-order lowpass (BJT bandwidth and Miller capacitance)",
+    "order": 2,
+    "chain": [
+      { "type": "highpass", "order": 1, "cutoff_hz": "1 / (2 * pi * Cin * Zin)" },
+      { "type": "gain", "gain_db": "20 * log10(Rc / Re_ac)" },
+      { "type": "lowpass", "order": 1, "cutoff_hz": "fT / (gain_linear * 10)" }
+    ],
+    "parameters": {
+      "gain_db": 20,
+      "hp_cutoff_hz": 20,
+      "lp_cutoff_hz": 150000,
+      "phase_inversion": true
+    }
+  },
+  "behavioral_description": "A classic single-transistor gain stage with a rich harmonic character. The BJT common emitter amplifier produces predominantly even-order harmonics at moderate gain, transitioning to a mix of even and odd harmonics as it's driven harder. The emitter bypass capacitor is a powerful tone-shaping element: a large value gives full gain and a fatter bass response, while a smaller value rolls off the low-end gain boost, yielding a thinner, more trebly sound. At high gain settings (30-40dB), the stage begins to clip asymmetrically, adding pleasant grit. The inherent bandwidth limitation of the BJT provides a natural treble rolloff that prevents harshness."
+}

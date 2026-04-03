@@ -1,0 +1,98 @@
+{
+  "id": "sallen_key_lowpass",
+  "transform": "filter",
+  "topology": "Sallen-Key Second-Order Lowpass Filter",
+  "components": [
+    {
+      "id": "U1",
+      "type": "op_amp",
+      "role": "Unity-gain buffer in Sallen-Key topology — provides the positive feedback path that creates resonance",
+      "model": "TL071",
+      "substitutes": ["TL081", "OPA134", "NE5532", "LF353"],
+      "max_voltage": 36,
+      "max_current_ma": 25
+    },
+    {
+      "id": "R1",
+      "type": "resistor",
+      "role": "First filter resistor — sets cutoff frequency with R2, C1, C2",
+      "formula": "1 / (2 * pi * fc * C1)",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 10
+    },
+    {
+      "id": "R2",
+      "type": "resistor",
+      "role": "Second filter resistor — equal to R1 for Butterworth response",
+      "formula": "R1",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 10
+    },
+    {
+      "id": "C1",
+      "type": "capacitor",
+      "role": "First filter capacitor — shunt to ground before op-amp input",
+      "formula": "1 / (2 * pi * fc * R1)",
+      "e_series": "E12",
+      "max_voltage": 50
+    },
+    {
+      "id": "C2",
+      "type": "capacitor",
+      "role": "Second filter capacitor — feedback cap from output to R1/R2 junction; C2 = 2*C1 for Butterworth Q",
+      "formula": "2 * C1",
+      "e_series": "E12",
+      "max_voltage": 50
+    },
+    {
+      "id": "Rb1",
+      "type": "resistor",
+      "role": "Bias divider upper",
+      "formula": "47e3",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 5
+    },
+    {
+      "id": "Rb2",
+      "type": "resistor",
+      "role": "Bias divider lower",
+      "formula": "47e3",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 5
+    },
+    {
+      "id": "Cb",
+      "type": "capacitor",
+      "role": "Bias decoupling",
+      "formula": "100e-6",
+      "e_series": "E12",
+      "max_voltage": 25
+    }
+  ],
+  "nodes": ["in", "out", "vcc", "gnd"],
+  "parameters": {
+    "cutoff_hz": { "min": 200, "max": 15000, "default": 3000, "unit": "Hz" },
+    "Q": { "min": 0.5, "max": 2.0, "default": 0.707, "unit": "" },
+    "supply_voltage": { "min": 5, "max": 18, "default": 9, "unit": "V" }
+  },
+  "spice_template": ".subckt TL071_model inp inn out vcc vee\nE1 mid 0 inp inn 200000\nR1x mid out 100\n.ends\nXU1 noninv out out vcc vee TL071_model\nR1 in mid1 {{R1}}\nR2 mid1 noninv {{R2}}\nC1 noninv bias {{C1}}\nC2 out mid1 {{C2}}\nRb1 vcc bias {{Rb1}}\nRb2 bias gnd {{Rb2}}\nCb bias gnd {{Cb}}\nVcc vcc gnd DC {{Vcc}}",
+  "dsp_model": {
+    "type": "transfer_function",
+    "description": "Second-order IIR lowpass (biquad); -12dB/octave rolloff, Q controls resonance peak at cutoff",
+    "order": 2,
+    "filter_type": "lowpass",
+    "implementation": "biquad_bilinear",
+    "transfer_function": "H(s) = wc^2 / (s^2 + s*wc/Q + wc^2)",
+    "parameters": {
+      "cutoff_hz": 3000,
+      "Q": 0.707,
+      "slope_db_per_octave": -12,
+      "resonance_db": 0
+    }
+  },
+  "behavioral_description": "A second-order active lowpass filter with a steeper rolloff than a simple RC filter (-12dB/octave vs -6dB/octave). The Sallen-Key topology uses an op-amp as a unity-gain buffer with a clever capacitor feedback path that creates a resonant second-order response. The Q parameter controls the shape at the cutoff frequency: at Q=0.707 (Butterworth), the response is maximally flat with no resonant peak. Higher Q values create a subtle boost at the cutoff before rolling off, adding presence and 'bite' just before the treble drops away. This is commonly used in pedals as a tone-shaping filter after distortion stages, or as the main filter in wah and envelope filter pedals. The steeper rolloff gives a more defined tonal character than a first-order filter."
+}

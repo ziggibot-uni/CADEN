@@ -13,11 +13,12 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["unstable", "tray-icon", "image-ico", "image-png"] }
 tauri-plugin-shell = "2"
 tauri-plugin-store = "2"
 tauri-plugin-http = "2"
 tauri-plugin-opener = "2"
+tauri-plugin-dialog = "2"
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -30,7 +31,7 @@ sqlx = { version = "0.8", features = [
 ] }
 
 tokio = { version = "1", features = ["full"] }
-reqwest = { version = "0.12", features = ["json", "stream"] }
+reqwest = { version = "0.12", features = ["json", "stream", "blocking"] }
 futures = "0.3"
 chrono = { version = "0.4", features = ["serde"] }
 anyhow = "1"
@@ -40,6 +41,8 @@ base64 = "0.22"
 sha2 = "0.10"
 rand = "0.8"
 urlencoding = "2"
+portable-pty = "0.8"
+regex = "1"
 
 [features]
 default = []

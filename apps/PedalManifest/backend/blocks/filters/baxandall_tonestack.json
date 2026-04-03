@@ -1,0 +1,136 @@
+{
+  "id": "baxandall_tonestack",
+  "transform": "filter",
+  "topology": "Baxandall Bass/Treble EQ",
+  "components": [
+    {
+      "id": "U1",
+      "type": "op_amp",
+      "role": "Dual op-amp — provides active bass and treble shelving EQ with boost and cut capability",
+      "model": "TL072",
+      "substitutes": ["NE5532", "OPA2134", "RC4558", "LF353"],
+      "max_voltage": 36,
+      "max_current_ma": 25
+    },
+    {
+      "id": "Rbass",
+      "type": "potentiometer",
+      "role": "Bass control pot — center detent is flat; CW boosts bass, CCW cuts bass",
+      "formula": "100e3",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 5
+    },
+    {
+      "id": "Rtreble",
+      "type": "potentiometer",
+      "role": "Treble control pot — center detent is flat; CW boosts treble, CCW cuts treble",
+      "formula": "100e3",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 5
+    },
+    {
+      "id": "Cbass",
+      "type": "capacitor",
+      "role": "Bass frequency-setting capacitor — determines the bass shelf transition frequency",
+      "formula": "1 / (2 * pi * f_bass * (Rbass / 2))",
+      "e_series": "E12",
+      "max_voltage": 50
+    },
+    {
+      "id": "Ctreble",
+      "type": "capacitor",
+      "role": "Treble frequency-setting capacitor — determines the treble shelf transition frequency",
+      "formula": "1 / (2 * pi * f_treble * (Rtreble / 2))",
+      "e_series": "E12",
+      "max_voltage": 50
+    },
+    {
+      "id": "Rin",
+      "type": "resistor",
+      "role": "Input resistor — sets flat-band gain and input impedance",
+      "formula": "10e3",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 5
+    },
+    {
+      "id": "Rf",
+      "type": "resistor",
+      "role": "Feedback resistor — sets flat-band gain (unity when Rf = Rin)",
+      "formula": "10e3",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 5
+    },
+    {
+      "id": "Cin",
+      "type": "capacitor",
+      "role": "Input coupling capacitor",
+      "formula": "1 / (2 * pi * 10 * Rin)",
+      "e_series": "E12",
+      "max_voltage": 50
+    },
+    {
+      "id": "Cout",
+      "type": "capacitor",
+      "role": "Output coupling capacitor",
+      "formula": "1 / (2 * pi * 10 * 10e3)",
+      "e_series": "E12",
+      "max_voltage": 50
+    },
+    {
+      "id": "Rb1",
+      "type": "resistor",
+      "role": "Bias divider upper",
+      "formula": "47e3",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 5
+    },
+    {
+      "id": "Rb2",
+      "type": "resistor",
+      "role": "Bias divider lower",
+      "formula": "47e3",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 5
+    },
+    {
+      "id": "Cb",
+      "type": "capacitor",
+      "role": "Bias decoupling",
+      "formula": "100e-6",
+      "e_series": "E12",
+      "max_voltage": 25
+    }
+  ],
+  "nodes": ["in", "out", "vcc", "gnd"],
+  "parameters": {
+    "bass_db": { "min": -15, "max": 15, "default": 0, "unit": "dB" },
+    "treble_db": { "min": -15, "max": 15, "default": 0, "unit": "dB" },
+    "f_bass": { "min": 50, "max": 500, "default": 200, "unit": "Hz" },
+    "f_treble": { "min": 1000, "max": 8000, "default": 3000, "unit": "Hz" },
+    "supply_voltage": { "min": 5, "max": 18, "default": 9, "unit": "V" }
+  },
+  "spice_template": ".subckt TL072_model inp inn out vcc vee\nE1 mid 0 inp inn 200000\nR1 mid out 100\n.ends\nXU1 noninv inv out vcc vee TL072_model\nRin in_ac inv_bass {{Rin}}\nRf out_treble inv_bass {{Rf}}\nRbass_a inv_bass bass_mid {{Rbass_a}}\nRbass_b bass_mid inv {{Rbass_b}}\nCbass bass_mid gnd {{Cbass}}\nRtreble_a inv_bass treble_mid {{Rtreble_a}}\nRtreble_b treble_mid out_treble {{Rtreble_b}}\nCtreble treble_mid gnd {{Ctreble}}\nRb1 vcc noninv {{Rb1}}\nRb2 noninv gnd {{Rb2}}\nCb noninv gnd {{Cb}}\nCin in in_ac {{Cin}}\nCout out out_ac {{Cout}}\nVcc vcc gnd DC {{Vcc}}",
+  "dsp_model": {
+    "type": "transfer_function",
+    "description": "Two independent first-order shelf filters — bass shelf and treble shelf — each with boost/cut capability",
+    "order": 2,
+    "filter_type": "dual_shelf",
+    "chain": [
+      { "type": "low_shelf", "order": 1, "freq_hz": "f_bass", "gain_db": "bass_db" },
+      { "type": "high_shelf", "order": 1, "freq_hz": "f_treble", "gain_db": "treble_db" }
+    ],
+    "parameters": {
+      "bass_freq_hz": 200,
+      "bass_gain_db": 0,
+      "treble_freq_hz": 3000,
+      "treble_gain_db": 0
+    }
+  },
+  "behavioral_description": "The Baxandall tone control is the gold standard for active bass/treble EQ in pedals and hi-fi equipment. It provides independent, symmetrical boost and cut of bass and treble frequencies with a smooth, musical response. At center position (pots at noon), the response is flat with unity gain. The bass and treble controls are largely independent — adjusting one has minimal effect on the other — which makes it intuitive to use. The active topology means boost and cut are available in equal amounts (typically +/-15dB), unlike passive tone stacks that can only cut. The interaction between the two shelves creates a natural, pleasing mid-scoop or mid-hump depending on settings, making it easy to sculpt a wide range of tones from scooped metal to fat bluesy warmth."
+}

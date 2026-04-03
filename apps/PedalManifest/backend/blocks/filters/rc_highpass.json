@@ -1,0 +1,43 @@
+{
+  "id": "rc_highpass",
+  "transform": "filter",
+  "topology": "First-Order RC Highpass Filter",
+  "components": [
+    {
+      "id": "C1",
+      "type": "capacitor",
+      "role": "Filter/coupling capacitor — blocks DC and low frequencies below cutoff",
+      "formula": "1 / (2 * pi * fc * R1)",
+      "e_series": "E12",
+      "max_voltage": 50
+    },
+    {
+      "id": "R1",
+      "type": "resistor",
+      "role": "Filter resistor — provides DC path to ground and sets cutoff with C1",
+      "formula": "1 / (2 * pi * fc * C1)",
+      "e_series": "E24",
+      "max_voltage": 50,
+      "max_current_ma": 10
+    }
+  ],
+  "nodes": ["in", "out", "gnd"],
+  "parameters": {
+    "cutoff_hz": { "min": 10, "max": 2000, "default": 100, "unit": "Hz" }
+  },
+  "spice_template": "C1 in out {{C1}}\nR1 out gnd {{R1}}",
+  "dsp_model": {
+    "type": "transfer_function",
+    "description": "First-order IIR highpass filter; -3dB at cutoff, -20dB/decade rolloff below",
+    "order": 1,
+    "filter_type": "highpass",
+    "implementation": "bilinear_transform",
+    "transfer_function": "H(s) = s*R1*C1 / (1 + s*R1*C1)",
+    "parameters": {
+      "cutoff_hz": 100,
+      "slope_db_per_octave": -6,
+      "slope_db_per_decade": -20
+    }
+  },
+  "behavioral_description": "A first-order highpass filter that removes low-frequency content below the cutoff. This is the fundamental bass-cut building block used everywhere in pedal circuits: before clipping stages to prevent muddy distortion, as coupling capacitors between stages, and as explicit bass-cut controls. At a cutoff of 100-200Hz, it tightens the low end and prevents boomy distortion. At higher cutoffs (500Hz+), it thins out the sound dramatically, useful for treble-boost effects or cocked-wah tones. Every coupling capacitor in a pedal circuit is effectively a highpass filter, so understanding this block is essential for voicing a pedal's overall bass response."
+}

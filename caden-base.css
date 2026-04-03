@@ -1,0 +1,36 @@
+/*
+ * CADEN Centralized Color Variables — Single Source of Truth
+ *
+ * All apps import this file instead of duplicating :root blocks.
+ * Values are space-separated RGB channels for Tailwind alpha support.
+ * At runtime inside the dashboard, apps receive live theme values
+ * via postMessage which override these defaults.
+ *
+ * Hex defaults live in caden-colors.js (cadenColorDefaults).
+ */
+:root {
+  --c-surface:        36 75 95;
+  --c-surface-1:      42 85 109;
+  --c-surface-2:      48 89 114;
+  --c-surface-3:      54 102 120;
+  --c-accent:         26 171 188;
+  --c-accent-dim:     20 138 154;
+  --c-accent-muted:   13 56 72;
+  --c-text:           232 244 250;
+  --c-text-muted:     154 191 204;
+  --c-text-dim:       104 152 168;
+  --c-urgency-high:   224 80 80;
+  --c-urgency-med:    212 160 48;
+  --c-urgency-low:    69 184 200;
+  --c-status-success: 61 186 114;
+  --c-status-star:    232 192 96;
+  --c-cat-progress:   69 184 200;
+  --c-cat-decision:   122 159 212;
+  --c-cat-constraint: 224 80 80;
+  --c-cat-idea:       212 160 48;
+  --c-cat-reference:  152 112 212;
+  --c-cat-note:       106 154 170;
+  --c-chat-response:  138 188 212;
+  --c-source-moodle:    128 96 192;
+  --c-source-moodle-bg: 51 55 90;
+}
