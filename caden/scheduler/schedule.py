@@ -32,10 +32,25 @@ from ..errors import LLMError, LLMRepairError, SchedulerError
 from .. import diag
 from ..libbie import retrieve
 from ..llm.client import OllamaClient
-from ..llm.repair import extract_json, require_fields, require_float
+from ..llm.repair import parse_and_validate
+import pydantic
 
+
+
+class MoveRequest(pydantic.BaseModel):
+    google_event_id: str
+    new_start: str
+    new_end: str
+
+class ScheduleBundle(pydantic.BaseModel):
+    start: str
+    end: str
+    duration_min: float | None = None
+    moves: list[MoveRequest] = pydantic.Field(default_factory=list)
+    rationale: str | None = ""
 
 # ---- data classes ------------------------------------------------------------
+
 
 @dataclass(frozen=True)
 class Chunk:
@@ -190,6 +205,7 @@ def plan(
     existing_events: Sequence[ExistingEvent],
     description_embedding: Sequence[float] | None = None,
     now: datetime | None = None,
+    preferences: str | None = None,
     on_thinking: Callable[[str], None] | None = None,
     on_content: Callable[[str], None] | None = None,
     on_open: Callable[[], None] | None = None,
@@ -198,6 +214,11 @@ def plan(
 
     Raises SchedulerError if the LLM violates hard constraints: before-now,
     past deadline, malformed times, or a proposed move of an external event.
+
+    ``preferences`` is Sean's free-form note for this specific task: ordering
+    constraints, blockers, time-of-day preferences, anything he wants the
+    scheduler to weight. It is not parsed; it is forwarded verbatim to the
+    LLM as additional context. Empty / None is a no-op.
 
     `on_thinking` / `on_content` let the caller surface live progress from
     the streaming model into the UI. `on_open` fires when the HTTP stream
@@ -251,11 +272,15 @@ def plan(
                 for r in neighbours[:5]
             )
 
+    prefs_block = (preferences or "").strip() or "(none)"
     user_prompt = (
         f"Sean's timezone: {tz_label}  (all times below are local wall-clock)\n"
         f"Now:           {_fmt_local(now, local_tz)}  ({now.astimezone(local_tz).strftime('%A')})\n"
         f"Deadline:      {_fmt_local(deadline, local_tz)}  ({deadline.astimezone(local_tz).strftime('%A')})\n"
         f"Description:   {description}\n\n"
+        f"Sean's preferences for THIS task (free-form; honour what you can,\n"
+        f"ignore what conflicts with hard constraints, surface conflicts in\n"
+        f"your rationale):\n{prefs_block}\n\n"
         f"Existing events between now and deadline:\n{_fmt_events(existing_events, local_tz)}\n\n"
         f"Relevant memory from Libbie:\n{ctx_block}\n\n"
         f"Emit a JSON schedule per the system instructions. "
@@ -288,15 +313,12 @@ def plan(
         raise SchedulerError(f"scheduler LLM call failed: {e}") from e
 
     try:
-        obj = extract_json(raw)
-        require_fields(obj, ("start", "end", "duration_min", "moves", "rationale"))
-        start = _parse_local(obj["start"], "start", local_tz)
-        end = _parse_local(obj["end"], "end", local_tz)
-        duration_min_raw = require_float(obj, "duration_min", allow_none=True)
-        moves_raw = obj["moves"] or []
-        if not isinstance(moves_raw, list):
-            raise LLMRepairError("moves must be a list")
-        rationale = str(obj.get("rationale") or "").strip()
+        obj = parse_and_validate(raw, ScheduleBundle)
+        start = _parse_local(obj.start, "start", local_tz)
+        end = _parse_local(obj.end, "end", local_tz)
+        duration_min_raw = obj.duration_min
+        moves_raw = obj.moves
+        rationale = obj.rationale.strip() if obj.rationale else ""
     except LLMRepairError as e:
         raise SchedulerError(f"scheduler output could not be parsed: {e}") from e
 
@@ -318,18 +340,16 @@ def plan(
     allowed_ids = {e.google_event_id for e in existing_events if e.caden_owned}
     displacements: list[Displacement] = []
     for m in moves_raw:
-        if not isinstance(m, dict):
-            raise SchedulerError(f"malformed move entry: {m!r}")
-        gid = m.get("google_event_id")
-        if not isinstance(gid, str) or not gid:
+        gid = m.google_event_id
+        if not gid:
             raise SchedulerError(f"move is missing google_event_id: {m!r}")
         if gid not in allowed_ids:
             raise SchedulerError(
                 f"LLM proposed moving {gid!r}, which is not a CADEN-owned event. "
                 f"External events must not be moved."
             )
-        ns = _parse_local(m.get("new_start"), f"moves[].new_start ({gid})", local_tz)
-        ne = _parse_local(m.get("new_end"), f"moves[].new_end ({gid})", local_tz)
+        ns = _parse_local(m.new_start, f"moves[].new_start ({gid})", local_tz)
+        ne = _parse_local(m.new_end, f"moves[].new_end ({gid})", local_tz)
         if ne <= ns:
             raise SchedulerError(f"move for {gid!r} has end ≤ start")
         if ns < now:

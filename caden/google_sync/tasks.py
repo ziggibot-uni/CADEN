@@ -30,9 +30,22 @@ class TasksClient:
         self.task_list_id = task_list_id
 
     def create(self, title: str, due: datetime, notes: str = "") -> GTask:
+        # Google Tasks `due` is documented as RFC 3339 datetime but in practice
+        # only the calendar date is honoured and the value is interpreted in
+        # UTC. Sending the raw UTC instant therefore shifts the displayed
+        # due-date by a day whenever Sean's local time crosses UTC midnight
+        # (e.g. "today 9pm" in Detroit = 01:00Z tomorrow → Tasks shows tomorrow).
+        # Anchor the due value to UTC midnight of Sean's *local* date instead.
+        if due.tzinfo is None:
+            local_tz = datetime.now().astimezone().tzinfo or timezone.utc
+            due = due.replace(tzinfo=local_tz)
+        local_date = due.astimezone().date()
+        due_anchor = datetime(
+            local_date.year, local_date.month, local_date.day, tzinfo=timezone.utc
+        )
         body = {
             "title": title,
-            "due": due.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+            "due": due_anchor.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
             "notes": notes,
         }
         try:

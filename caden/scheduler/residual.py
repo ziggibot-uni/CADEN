@@ -62,7 +62,7 @@ def compute_and_store(
     """Compute residuals for a completed task and write them. Returns residual id."""
     pred = conn.execute(
         """
-        SELECT predicted_duration_min,
+        SELECT pred_duration_min,
                pred_pre_mood, pred_pre_energy, pred_pre_productivity,
                pred_post_mood, pred_post_energy, pred_post_productivity
         FROM predictions WHERE id=?
@@ -79,7 +79,7 @@ def compute_and_store(
         raise SchedulerError(f"bad iso timestamps for residual: {e}") from e
 
     actual_minutes = max(0.0, (end - start).total_seconds() / 60.0)
-    duration_residual = actual_minutes - float(pred["predicted_duration_min"])
+    duration_residual = actual_minutes - float(pred["pred_duration_min"])
 
     observed_pre = _nearest_rating(conn, planned_start_iso, STATE_WINDOW_MIN)
     observed_post = _nearest_rating(conn, actual_end_iso, STATE_WINDOW_MIN)

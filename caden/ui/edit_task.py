@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import dateparser
-from datetime import timezone
+from datetime import datetime, timezone
 from textual.app import ComposeResult
 from textual.containers import Grid, Vertical
 from textual.screen import ModalScreen
@@ -12,8 +12,34 @@ from textual.widgets import Button, Input, Label, Static
 
 from .services import Services
 from ..errors import CadenError
+from .add_task import rewrite_times_local, _fmt_12h_with_date
+
+
+def _parse_local(text: str) -> datetime | None:
+    """Parse free-form text as system-local wall-clock, return aware datetime.
+
+    See add_task._parse_local_deadline for the rationale: dateparser otherwise
+    treats naive input as UTC and silently shifts the calendar day.
+    """
+    local_tz = datetime.now().astimezone().tzinfo or timezone.utc
+    tz_name = datetime.now(local_tz).tzname() or "UTC"
+    parsed = dateparser.parse(
+        text,
+        settings={
+            "PREFER_DATES_FROM": "future",
+            "RETURN_AS_TIMEZONE_AWARE": True,
+            "TIMEZONE": tz_name,
+        },
+    )
+    if parsed is None:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=local_tz)
+    return parsed
 
 class EditTaskScreen(ModalScreen[bool]):
+    BINDINGS = [("escape", "cancel", "Cancel")]
+
     DEFAULT_CSS = """
     EditTaskScreen {
         align: center middle;
@@ -45,15 +71,22 @@ class EditTaskScreen(ModalScreen[bool]):
         end_val = ""
         desc_val = ""
         if self.event_obj:
-            start_val = self.event_obj.start.astimezone().strftime("%Y-%m-%d %H:%M")
-            end_val = self.event_obj.end.astimezone().strftime("%Y-%m-%d %H:%M")
-            desc_val = self.event_obj.raw.get("description", "")
+            local_tz = datetime.now().astimezone().tzinfo or timezone.utc
+            today_local = datetime.now(local_tz)
+            start_val = _fmt_12h_with_date(
+                self.event_obj.start.astimezone(local_tz), today_local
+            )
+            end_val = _fmt_12h_with_date(
+                self.event_obj.end.astimezone(local_tz), today_local
+            )
+            raw_desc = self.event_obj.raw.get("description", "") or ""
+            desc_val = rewrite_times_local(raw_desc, local_tz)
             
         with Vertical():
             yield Static("Edit Event", classes="title")
             yield Label("Title")
             yield Input(value=self.summary, id="title")
-            yield Label("Start Time (e.g. 'today 5pm' or '2026-04-24 17:00')")
+            yield Label("Start Time (e.g. 'today 5pm', '9:30 pm', 'apr 30 2:30pm')")
             yield Input(value=start_val, id="start")
             yield Label("End Time")
             yield Input(value=end_val, id="end")
@@ -62,6 +95,7 @@ class EditTaskScreen(ModalScreen[bool]):
             yield Static("", id="status")
             with Grid(id="buttons"):
                 yield Button("Save", variant="primary", id="ok")
+                yield Button("Complete Task", id="complete", variant="success")
                 yield Button("Cancel", id="cancel")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
@@ -69,6 +103,26 @@ class EditTaskScreen(ModalScreen[bool]):
             self.dismiss(False)
         elif event.button.id == "ok":
             self.run_worker(self._submit(), exclusive=True)
+        elif event.button.id == "complete":
+            self.run_worker(self._complete_task(), exclusive=True)
+
+    def action_cancel(self) -> None:
+        self.dismiss(False)
+
+    async def _complete_task(self) -> None:
+        status = self.query_one("#status", Static)
+        status.update("completing task...")
+        try:
+            await asyncio.to_thread(self._do_complete)
+            self.dismiss(True)
+        except Exception as e:
+            status.update(f"error: {e}")
+
+    def _do_complete(self) -> None:
+        if self.g_task_id and self.services.tasks:
+            self.services.tasks.mark_completed(self.g_task_id)
+            from ..google_sync.poll import poll_once
+            poll_once(self.services.conn, self.services.tasks, self.services.calendar)
 
     async def _submit(self) -> None:
         status = self.query_one("#status", Static)
@@ -81,18 +135,13 @@ class EditTaskScreen(ModalScreen[bool]):
             status.update("title, start, and end times are required")
             return
             
-        start_dt = dateparser.parse(start_str, settings={"PREFER_DATES_FROM": "future", "RETURN_AS_TIMEZONE_AWARE": True})
-        end_dt = dateparser.parse(end_str, settings={"PREFER_DATES_FROM": "future", "RETURN_AS_TIMEZONE_AWARE": True})
-        
+        start_dt = _parse_local(start_str)
+        end_dt = _parse_local(end_str)
+
         if not start_dt or not end_dt:
             status.update("could not understand date/time format")
             return
-            
-        if start_dt.tzinfo is None:
-            start_dt = start_dt.replace(tzinfo=timezone.utc)
-        if end_dt.tzinfo is None:
-            end_dt = end_dt.replace(tzinfo=timezone.utc)
-            
+
         if end_dt <= start_dt:
             status.update("end time must be after start time")
             return
@@ -105,6 +154,8 @@ class EditTaskScreen(ModalScreen[bool]):
             status.update(f"error: {e}")
 
     def _save(self, title: str, start_dt, end_dt, desc: str) -> None:
+        local_tz = datetime.now().astimezone().tzinfo or timezone.utc
+        clean_desc = rewrite_times_local(desc or "", local_tz)
         if self.services.calendar:
             try:
                 event = self.services.calendar.service.events().get(
@@ -112,7 +163,7 @@ class EditTaskScreen(ModalScreen[bool]):
                     eventId=self.g_event_id
                 ).execute()
                 event['summary'] = title
-                event['description'] = desc
+                event['description'] = clean_desc
                 event['start'] = {"dateTime": start_dt.astimezone(timezone.utc).isoformat()}
                 event['end'] = {"dateTime": end_dt.astimezone(timezone.utc).isoformat()}
                 self.services.calendar.service.events().update(
@@ -145,7 +196,7 @@ class EditTaskScreen(ModalScreen[bool]):
                     task=self.g_task_id
                 ).execute()
                 task['title'] = title
-                task['notes'] = desc
+                task['notes'] = clean_desc
                 self.services.tasks.service.tasks().update(
                     tasklist=self.services.tasks.task_list_id,
                     task=self.g_task_id,

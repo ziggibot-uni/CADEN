@@ -19,14 +19,15 @@ The moment Google is configured, tasks flow end to end.
 from __future__ import annotations
 
 import asyncio
+import re
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, tzinfo
 
 import dateparser
 from textual.app import ComposeResult
 from textual.containers import Grid, Vertical, VerticalScroll
 from textual.screen import ModalScreen
-from textual.widgets import Button, Input, Label, Static
+from textual.widgets import Button, Input, Label, Static, TextArea
 
 from ..errors import CadenError, SchedulerError
 from ..libbie.store import link_task_event, write_task
@@ -35,12 +36,139 @@ from ..scheduler.schedule import ExistingEvent, plan
 from .services import Services
 
 
+def _parse_local_deadline(text: str) -> datetime | None:
+    """Parse a free-form deadline as the system's local wall-clock time.
+
+    Without an explicit ``TIMEZONE`` setting, dateparser interprets naive
+    inputs as UTC when ``RETURN_AS_TIMEZONE_AWARE`` is on, which silently
+    shifts "today 5pm" into a different calendar day depending on offset
+    (e.g. UTC midnight is the previous day in Detroit, and ``PREFER_DATES_FROM=future``
+    then bumps "today" to tomorrow). Sean is in America/Detroit; we always
+    interpret his typing in his local zone and convert to UTC at the boundary.
+    """
+    local_tz = datetime.now().astimezone().tzinfo
+    if local_tz is None:
+        # astimezone() with no args always attaches the system tz; this is
+        # defence in depth, not a code path we expect to hit.
+        local_tz = timezone.utc
+    tz_name = datetime.now(local_tz).tzname() or "UTC"
+    parsed = dateparser.parse(
+        text,
+        settings={
+            "PREFER_DATES_FROM": "future",
+            "RETURN_AS_TIMEZONE_AWARE": True,
+            "TIMEZONE": tz_name,
+        },
+    )
+    if parsed is None:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=local_tz)
+    return parsed
+
+
+# --- deterministic time rewriting --------------------------------------------
+#
+# The LLM scheduler emits times in 24-hour "YYYY-MM-DD HH:MM" form (its prompt
+# requires it) and may echo those, plus bare "HH:MM" or ISO timestamps, into
+# its rationale. Sean wants every time that ends up in a Google Task / Calendar
+# note rendered in his local 12-hour am/pm format, no exceptions, no LLM
+# discretion. We rewrite via regex after the fact so a stray timestamp from a
+# future caller still gets normalised.
+
+_LOCAL_FMT_RE = re.compile(
+    r"\b(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::\d{2})?"
+    r"(Z|[+-]\d{2}:?\d{2})?\b"
+)
+_BARE_24H_RE = re.compile(r"(?<![\d:])([01]?\d|2[0-3]):([0-5]\d)(?!\s*(?:am|pm|AM|PM))(?!\d)")
+_AMPM_RE = re.compile(r"\b(\d{1,2})(?::([0-5]\d))?\s*([aApP])\.?\s*([mM])\.?\b")
+
+
+def _fmt_12h(dt: datetime) -> str:
+    """h:mm am/pm, lower-case, no leading zero on the hour."""
+    s = dt.strftime("%I:%M %p")
+    return s.lstrip("0").lower()
+
+
+def _fmt_12h_with_date(dt: datetime, today: datetime) -> str:
+    """Like _fmt_12h, prefixed with a date label when not today."""
+    if dt.date() == today.date():
+        return _fmt_12h(dt)
+    return f"{dt.strftime('%a %b ').lstrip().replace(' 0', ' ')}{dt.day} {_fmt_12h(dt)}"
+
+
+def rewrite_times_local(text: str, local_tz: tzinfo) -> str:
+    """Rewrite every recognised time form in ``text`` into local 12-hour am/pm.
+
+    - "YYYY-MM-DD[T ]HH:MM[:SS][offset]" → local "h:mm am/pm" (with date label
+      if not today's local date).
+    - bare "HH:MM" 24-hour (not already followed by am/pm) → "h:mm am/pm" using
+      the same wall-clock hours and minutes (no tz arithmetic — the LLM is
+      already speaking local wall-clock by prompt contract).
+    - existing "h(:mm)? am/pm" → normalised to "h:mm am/pm" lower-case.
+    """
+    today_local = datetime.now(local_tz)
+
+    def _sub_iso(m: re.Match) -> str:
+        y, mo, d, h, mi, off = m.groups()
+        try:
+            naive = datetime(int(y), int(mo), int(d), int(h), int(mi))
+        except ValueError:
+            return m.group(0)
+        if off is None:
+            dt = naive.replace(tzinfo=local_tz)
+        else:
+            iso = f"{y}-{mo}-{d}T{h}:{mi}:00{off.replace('Z', '+00:00')}"
+            try:
+                dt = datetime.fromisoformat(iso)
+            except ValueError:
+                return m.group(0)
+        return _fmt_12h_with_date(dt.astimezone(local_tz), today_local)
+
+    def _sub_24h(m: re.Match) -> str:
+        h, mi = int(m.group(1)), int(m.group(2))
+        if h == 0 and mi == 0:
+            return m.group(0)  # ambiguous "00:00" → leave alone
+        anchor = today_local.replace(hour=h, minute=mi, second=0, microsecond=0)
+        return _fmt_12h(anchor)
+
+    def _sub_ampm(m: re.Match) -> str:
+        h = int(m.group(1))
+        mi = int(m.group(2)) if m.group(2) else 0
+        ap = m.group(3).lower() + "m"
+        if h <= 0 or h > 12:
+            return m.group(0)
+        return f"{h}:{mi:02d} {ap}"
+
+    text = _LOCAL_FMT_RE.sub(_sub_iso, text)
+    text = _BARE_24H_RE.sub(_sub_24h, text)
+    text = _AMPM_RE.sub(_sub_ampm, text)
+    return text
+
+
+def _format_block_line(start: datetime, end: datetime, local_tz: tzinfo) -> str:
+    """One-line human description of a scheduled block in local 12-hour."""
+    from datetime import timedelta
+    s = start.astimezone(local_tz)
+    e = end.astimezone(local_tz)
+    today = datetime.now(local_tz).date()
+    if s.date() == today:
+        date_label = "today"
+    elif s.date() == today + timedelta(days=1):
+        date_label = "tomorrow"
+    else:
+        date_label = s.strftime("%a %b %-d")
+    return f"{date_label} {_fmt_12h(s)} – {_fmt_12h(e)}"
+
+
 class AddTaskScreen(ModalScreen[bool]):
+    BINDINGS = [("escape", "cancel", "Cancel")]
+
     DEFAULT_CSS = """
     AddTaskScreen {
         align: center middle;
     }
-    AddTaskScreen > Vertical {
+    AddTaskScreen > VerticalScroll {
         width: 90;
         height: auto;
         max-height: 90%;
@@ -50,6 +178,10 @@ class AddTaskScreen(ModalScreen[bool]):
     }
     AddTaskScreen Label {
         margin-top: 1;
+    }
+    AddTaskScreen #prefs {
+        height: 6;
+        min-height: 6;
     }
     AddTaskScreen #buttons {
         margin-top: 1;
@@ -91,12 +223,18 @@ class AddTaskScreen(ModalScreen[bool]):
         self._t0: float = 0.0
 
     def compose(self) -> ComposeResult:
-        with Vertical():
+        with VerticalScroll():
             yield Static("Add a task", classes="title")
             yield Label("Description (required)")
             yield Input(placeholder="what is the task?", id="desc")
             yield Label("Deadline (e.g. 'tomorrow 5pm', 'apr 30 2:30pm', 'next monday at 9am')")
             yield Input(placeholder="in plain english…", id="deadline")
+            yield Label(
+                "Preferences / notes for the scheduler (optional)\n"
+                "e.g. 'do this before TaskX but after TaskY', 'blocked by TaskZ',\n"
+                "'mornings only', 'split across two days', 'needs deep focus'"
+            )
+            yield TextArea(id="prefs")
             yield Static("", id="status")
             with VerticalScroll(id="live"):
                 yield Static("", id="live-thinking", markup=False)
@@ -112,6 +250,9 @@ class AddTaskScreen(ModalScreen[bool]):
         if event.button.id == "ok":
             self.run_worker(self._submit(), exclusive=True, group="add-task")
 
+    def action_cancel(self) -> None:
+        self.dismiss(False)
+
     async def _submit(self) -> None:
         status = self.query_one("#status", Static)
         desc = self.query_one("#desc", Input).value.strip()
@@ -122,20 +263,12 @@ class AddTaskScreen(ModalScreen[bool]):
         if not dl_raw:
             status.update("deadline is required")
             return
-        deadline = dateparser.parse(
-            dl_raw,
-            settings={
-                "PREFER_DATES_FROM": "future",
-                "RETURN_AS_TIMEZONE_AWARE": True,
-            },
-        )
+        deadline = _parse_local_deadline(dl_raw)
         if deadline is None:
             status.update(
                 "could not understand that date/time — try 'tomorrow 5pm' or 'apr 30 2:30pm'"
             )
             return
-        if deadline.tzinfo is None:
-            deadline = deadline.replace(tzinfo=timezone.utc)
 
         self._t0 = time.monotonic()
         self._set_status("submit: starting")
@@ -272,7 +405,7 @@ class AddTaskScreen(ModalScreen[bool]):
                 ),
             )
 
-    def _execute(self, desc: str, deadline: datetime) -> None:
+    def _execute(self, desc: str, deadline: datetime, preferences: str = "") -> None:
         s = self.services
         now = datetime.now(timezone.utc)
 
@@ -300,6 +433,7 @@ class AddTaskScreen(ModalScreen[bool]):
                 existing_events=existing,
                 description_embedding=desc_emb,
                 now=now,
+                preferences=preferences,
                 on_open=lambda: self._set_status("HTTP stream opened, waiting for first token\u2026"),
                 on_thinking=self._on_sched_thinking,
                 on_content=self._on_sched_content,
@@ -312,10 +446,26 @@ class AddTaskScreen(ModalScreen[bool]):
         )
 
         # 4. Google Task (the deadline-side handle)
+        local_tz = datetime.now().astimezone().tzinfo or timezone.utc
+        scheduled_summary = ", ".join(
+            _format_block_line(c.start, c.end, local_tz) for c in sched.chunks
+        )
+        deadline_local = _fmt_12h_with_date(
+            deadline.astimezone(local_tz), datetime.now(local_tz)
+        )
+        rationale_clean = rewrite_times_local(sched.rationale or "", local_tz)
+        prefs_block = preferences.strip() if preferences else ""
+        task_notes = (
+            f"created by CADEN\n"
+            f"deadline: {deadline_local}\n"
+            f"scheduled: {scheduled_summary}"
+        )
+        if prefs_block:
+            task_notes += f"\n\npreferences:\n{prefs_block}"
         g_task_id: str | None = None
         if s.tasks is not None:
             self._set_status("creating Google task\u2026")
-            gt = s.tasks.create(title=desc, due=deadline, notes="created by CADEN")  # type: ignore[attr-defined]
+            gt = s.tasks.create(title=desc, due=deadline, notes=task_notes)  # type: ignore[attr-defined]
             g_task_id = gt.id
         self._set_status("writing task to Libbie\u2026")
         task_id = write_task(
@@ -372,7 +522,13 @@ class AddTaskScreen(ModalScreen[bool]):
                 summary=title,
                 start=c.start,
                 end=c.end,
-                description=f"CADEN task #{task_id}\n\n{sched.rationale}",
+                description=(
+                    f"CADEN task #{task_id}\n"
+                    f"deadline: {deadline_local}\n"
+                    f"block: {_format_block_line(c.start, c.end, local_tz)}\n\n"
+                    + (f"preferences:\n{prefs_block}\n\n" if prefs_block else "")
+                    + rationale_clean
+                ),
             )
             if first_event_id is None:
                 first_event_id = ce.id

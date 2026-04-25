@@ -22,7 +22,29 @@ from ..libbie import retrieve
 from ..libbie.store import write_prediction
 from ..llm.client import OllamaClient
 from ..llm.embed import Embedder
-from ..llm.repair import extract_json, require_fields, require_float
+from ..llm.repair import parse_and_validate
+import pydantic
+
+class NestedAxis(pydantic.BaseModel):
+    mood: float | None = None
+    energy: float | None = None
+    productivity: float | None = None
+
+class ConfidenceValues(pydantic.BaseModel):
+    duration: float | None = None
+    pre_mood: float | None = None
+    pre_energy: float | None = None
+    pre_productivity: float | None = None
+    post_mood: float | None = None
+    post_energy: float | None = None
+    post_productivity: float | None = None
+
+class PredictionBundle(pydantic.BaseModel):
+    predicted_duration_min: float
+    pre: NestedAxis
+    post: NestedAxis
+    confidence: ConfidenceValues = pydantic.Field(default_factory=ConfidenceValues)
+    rationale: str | None = ""
 
 
 SYSTEM_PROMPT = """You are CADEN's prediction engine. Given a task description and the \
@@ -114,38 +136,24 @@ def emit_prediction(
         raise SchedulerError(f"prediction LLM call failed: {e}") from e
 
     try:
-        obj = extract_json(raw)
-        require_fields(obj, ("predicted_duration_min", "pre", "post", "confidence", "rationale"))
-        dur = require_float(obj, "predicted_duration_min")
+        obj = parse_and_validate(raw, PredictionBundle)
+        dur = obj.predicted_duration_min
         if dur <= 0:
             raise LLMRepairError(f"predicted_duration_min must be > 0, got {dur}")
-        pre_obj = obj["pre"]
-        post_obj = obj["post"]
-        if not isinstance(pre_obj, dict) or not isinstance(post_obj, dict):
-            raise LLMRepairError("pre and post must be objects")
-        pre = (
-            require_float(pre_obj, "mood", allow_none=True),
-            require_float(pre_obj, "energy", allow_none=True),
-            require_float(pre_obj, "productivity", allow_none=True),
-        )
-        post = (
-            require_float(post_obj, "mood", allow_none=True),
-            require_float(post_obj, "energy", allow_none=True),
-            require_float(post_obj, "productivity", allow_none=True),
-        )
-        cobj = obj.get("confidence") or {}
-        if not isinstance(cobj, dict):
-            raise LLMRepairError("confidence must be an object")
+            
+        pre = (obj.pre.mood, obj.pre.energy, obj.pre.productivity)
+        post = (obj.post.mood, obj.post.energy, obj.post.productivity)
+
         confidences = {
-            "duration": require_float(cobj, "duration", allow_none=True),
-            "pre_mood": require_float(cobj, "pre_mood", allow_none=True),
-            "pre_energy": require_float(cobj, "pre_energy", allow_none=True),
-            "pre_productivity": require_float(cobj, "pre_productivity", allow_none=True),
-            "post_mood": require_float(cobj, "post_mood", allow_none=True),
-            "post_energy": require_float(cobj, "post_energy", allow_none=True),
-            "post_productivity": require_float(cobj, "post_productivity", allow_none=True),
+            "duration": obj.confidence.duration,
+            "pre_mood": obj.confidence.pre_mood,
+            "pre_energy": obj.confidence.pre_energy,
+            "pre_productivity": obj.confidence.pre_productivity,
+            "post_mood": obj.confidence.post_mood,
+            "post_energy": obj.confidence.post_energy,
+            "post_productivity": obj.confidence.post_productivity,
         }
-        rationale = str(obj.get("rationale") or "").strip()
+        rationale = obj.rationale.strip() if obj.rationale else ""
     except LLMRepairError as e:
         raise SchedulerError(f"prediction output could not be parsed: {e}") from e
 

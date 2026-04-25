@@ -59,10 +59,12 @@ class CadenApp(App):
                 self.services.calendar,
             )
         except CadenError as e:
-            # Loud failure: surface in the dashboard's status area. Do not
-            # silently swallow; spec forbids it.
+            # Loud failure: surface in the dashboard's status area, pop the modal
+            # and freeze the completion poll subsystem per the "no silent fallbacks" rule
+            from ._error import ErrorBanner
             self.bell()
-            self.notify(f"completion poll failed: {e}", severity="error")
+            self.workers.cancel_group("completion-poll") # Halts future runs
+            self.push_screen(ErrorBanner(exception=e, context="completion-poll"))
             return
         if finalised:
             self.notify(

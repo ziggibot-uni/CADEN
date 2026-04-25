@@ -93,12 +93,12 @@ def write_rating(
             """
             INSERT INTO ratings
               (event_id, mood, energy, productivity,
-               confidence_mood, confidence_energy, confidence_productivity,
-               rationale)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+               conf_mood, conf_energy, conf_productivity,
+               rationale, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (event_id, mood, energy, productivity,
-             c_mood, c_energy, c_productivity, rationale),
+             c_mood, c_energy, c_productivity, rationale, _now_iso()),
         )
         rating_id = int(cur.lastrowid)
     except sqlite3.Error as e:
@@ -143,8 +143,12 @@ def write_task(
 ) -> int:
     try:
         cur = conn.execute(
-            "INSERT INTO tasks (google_task_id, description, deadline) VALUES (?, ?, ?)",
-            (google_task_id, description, deadline_iso),
+            """
+            INSERT INTO tasks
+              (google_task_id, description, deadline_utc, status, created_at)
+            VALUES (?, ?, ?, 'open', ?)
+            """,
+            (google_task_id, description, deadline_iso, _now_iso()),
         )
         task_id = int(cur.lastrowid)
     except sqlite3.Error as e:
@@ -191,7 +195,7 @@ def complete_task(
 ) -> None:
     try:
         conn.execute(
-            "UPDATE tasks SET status='complete', completed_at=? WHERE id=?",
+            "UPDATE tasks SET status='complete', completed_at_utc=? WHERE id=?",
             (completed_at_iso, task_id),
         )
         conn.execute(
@@ -222,23 +226,25 @@ def write_prediction(
         cur = conn.execute(
             """
             INSERT INTO predictions (
-              task_id, google_event_id, predicted_duration_min,
+              task_id, google_event_id, pred_duration_min,
               pred_pre_mood, pred_pre_energy, pred_pre_productivity,
               pred_post_mood, pred_post_energy, pred_post_productivity,
-              confidence_duration,
-              confidence_pre_mood, confidence_pre_energy, confidence_pre_productivity,
-              confidence_post_mood, confidence_post_energy, confidence_post_productivity,
-              rationale
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              conf_duration,
+              conf_pre_mood, conf_pre_energy, conf_pre_productivity,
+              conf_post_mood, conf_post_energy, conf_post_productivity,
+              rationale,
+              created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                task_id, google_event_id, predicted_duration_min,
+                task_id, google_event_id, int(round(predicted_duration_min)),
                 pre[0], pre[1], pre[2],
                 post[0], post[1], post[2],
                 confidences.get("duration"),
                 confidences.get("pre_mood"), confidences.get("pre_energy"), confidences.get("pre_productivity"),
                 confidences.get("post_mood"), confidences.get("post_energy"), confidences.get("post_productivity"),
                 rationale,
+                _now_iso(),
             ),
         )
         prediction_id = int(cur.lastrowid)
@@ -281,15 +287,18 @@ def write_residual(
             INSERT INTO residuals (
               prediction_id,
               duration_actual_min, duration_residual_min,
-              pre_mood_residual, pre_energy_residual, pre_productivity_residual,
-              post_mood_residual, post_energy_residual, post_productivity_residual
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+              pre_state_residual_mood, pre_state_residual_energy, pre_state_residual_productivity,
+              post_state_residual_mood, post_state_residual_energy, post_state_residual_productivity,
+              created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 prediction_id,
-                duration_actual_min, duration_residual_min,
+                None if duration_actual_min is None else int(round(duration_actual_min)),
+                None if duration_residual_min is None else int(round(duration_residual_min)),
                 pre_residuals[0], pre_residuals[1], pre_residuals[2],
                 post_residuals[0], post_residuals[1], post_residuals[2],
+                _now_iso(),
             ),
         )
         residual_id = int(cur.lastrowid)

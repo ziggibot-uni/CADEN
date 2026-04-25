@@ -22,7 +22,20 @@ from ..libbie import retrieve
 from ..libbie.store import Event, write_rating
 from ..llm.client import OllamaClient
 from ..llm.embed import Embedder
-from ..llm.repair import extract_json, require_fields, require_float
+from ..llm.repair import parse_and_validate
+import pydantic
+
+class ConfidenceVals(pydantic.BaseModel):
+    mood: float | None = None
+    energy: float | None = None
+    productivity: float | None = None
+
+class RatingBundle(pydantic.BaseModel):
+    mood: float | None = None
+    energy: float | None = None
+    productivity: float | None = None
+    confidence: ConfidenceVals = pydantic.Field(default_factory=ConfidenceVals)
+    rationale: str | None = ""
 
 # Sources the rater is NOT allowed to process. Intake events are meta-content
 # about Sean, not events Sean experienced (spec: "Intake and the rater").
@@ -153,18 +166,14 @@ def rate_event(
         raise RaterError(f"rater LLM call failed: {e}") from e
 
     try:
-        obj = extract_json(raw)
-        require_fields(obj, ("mood", "energy", "productivity", "confidence", "rationale"))
-        mood = require_float(obj, "mood", allow_none=True)
-        energy = require_float(obj, "energy", allow_none=True)
-        productivity = require_float(obj, "productivity", allow_none=True)
-        conf = obj.get("confidence") or {}
-        if not isinstance(conf, dict):
-            raise LLMRepairError("confidence must be an object")
-        c_mood = require_float(conf, "mood", allow_none=True)
-        c_energy = require_float(conf, "energy", allow_none=True)
-        c_productivity = require_float(conf, "productivity", allow_none=True)
-        rationale = str(obj.get("rationale") or "").strip()
+        obj = parse_and_validate(raw, RatingBundle)
+        mood = obj.mood
+        energy = obj.energy
+        productivity = obj.productivity
+        c_mood = obj.confidence.mood
+        c_energy = obj.confidence.energy
+        c_productivity = obj.confidence.productivity
+        rationale = obj.rationale.strip() if obj.rationale else ""
     except LLMRepairError as e:
         raise RaterError(f"rater output could not be parsed: {e}") from e
 
