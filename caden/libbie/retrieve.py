@@ -38,6 +38,8 @@ def search(
         return []
     blob = _db.pack_vector(query_embedding)
     # sqlite-vec kNN: MATCH + LIMIT returns nearest vectors; we join back to events.
+    # We fetch extra candidates to allow post-filtering and resorting (e.g. length bias).
+    fetch_k = k * 10
     try:
         rows = conn.execute(
             """
@@ -48,24 +50,37 @@ def search(
               AND k = ?
             ORDER BY v.distance
             """,
-            (blob, k * 4 if sources else k),
+            (blob, fetch_k),
         ).fetchall()
     except sqlite3.Error as e:
         raise DBError(f"vector search failed: {e}") from e
 
-    results: list[RetrievedEvent] = []
+    candidates: list[RetrievedEvent] = []
     for r in rows:
         if sources and r["source"] not in sources:
             continue
-        results.append(
+            
+        raw = r["raw_text"]
+        base_dist = float(r["distance"])
+        
+        # Length bias: shorter messages get a better (lower) distance score
+        # so tips/advice surface over long monologues.
+        # This acts as a rudimentary heuristic that will ideally be absorbed
+        # by learned weights once the residual feedback loop is fully active.
+        char_len = len(raw)
+        length_penalty = (char_len / 1000.0) * 0.1  # penalize long text
+        adjusted_distance = base_dist + length_penalty
+        
+        candidates.append(
             RetrievedEvent(
                 event=Event(
                     id=r["id"], timestamp=r["timestamp"], source=r["source"],
-                    raw_text=r["raw_text"], meta=_safe_json(r["meta_json"]),
+                    raw_text=raw, meta=_safe_json(r["meta_json"]),
                 ),
-                distance=float(r["distance"]),
+                distance=adjusted_distance,
             )
         )
-        if len(results) >= k:
-            break
-    return results
+        
+    # Re-sort by adjusted distance and take top K
+    candidates.sort(key=lambda c: c.distance)
+    return candidates[:k]

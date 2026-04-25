@@ -40,12 +40,6 @@ DB_FILENAME = "caden.sqlite3"
 # enough data. None of them encodes a belief about Sean specifically; they are
 # all about "data must exist before math can run."
 
-BOOTSTRAP_DEFAULT_DURATION_MIN = 60
-"""First-schedule predicted duration when retrieval returns no signal."""
-
-BOOTSTRAP_FIRST_SCHEDULE_CONFIDENCE = 0.1
-"""Confidence floor for predictions emitted with no relevant history."""
-
 BOOTSTRAP_COMPLETION_POLL_SECONDS = 60
 """How often Google Tasks is polled for completions while CADEN is running."""
 
@@ -60,6 +54,39 @@ BOOTSTRAP_RETRIEVAL_TRUNCATE_CHARS = 500
 
 BOOTSTRAP_RETRIEVAL_MIN_K = 5
 """If truncation would drop retrieval below this, fail loudly (LLMError)."""
+
+BOOTSTRAP_FOCAL_TEXT_TRUNCATE_CHARS = 2000
+"""Per-prompt cap on the *focal* item being acted on (the event being rated,
+the task description being scheduled / predicted, free-form preferences).
+More generous than the per-memory cap because the focal item is the point
+of the call, but still bounded so a 20k-char journal entry can't swamp the
+model's attention."""
+
+BOOTSTRAP_SCHEDULER_MAX_CALENDAR_EVENTS = 40
+"""Hard cap on existing calendar events fed into the scheduler prompt. If
+the window contains more, fail loudly — past this point the LLM's attention
+is so diluted across conflicts that scheduling output is unreliable, and
+the right answer is to narrow the window or summarise upstream."""
+
+BOOTSTRAP_SCHEDULER_EVENT_SUMMARY_CHARS = 80
+"""Per-event cap on the calendar event title shown to the scheduler. Long
+meeting titles ('[ACME / Q3 planning] 3-of-7 cross-team sync — ...') waste
+tokens; the start/end times and ownership flag are what matters."""
+
+BOOTSTRAP_SCHEDULER_MAX_RETRIES = 3
+"""How many times to re-prompt the scheduler LLM when its proposal violates
+a deterministic constraint (overlap, ordering, forbidden move, malformed
+time). Each retry repackages the prior attempt and the precise lesson into
+the next prompt. Above this cap we give up and surface SchedulerError."""
+
+BOOTSTRAP_STATE_RESIDUAL_WINDOW_MIN = 30
+"""How far from a block boundary (start or end) a rating may lie and still
+count as "the observed state at that boundary" when computing pre/post
+state residuals. Too tight → most boundaries have no nearby rating and
+residuals stay NULL forever, starving the learning signal. Too loose →
+ratings of unrelated activity get attributed to the wrong block. 30 min
+is the bootstrap; the learning system replaces it once residual density
+is high enough to fit a window per axis from the data."""
 
 
 @dataclass(frozen=True)

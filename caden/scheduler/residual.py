@@ -13,14 +13,11 @@ the corresponding residual fields remain NULL — truthful unknown.
 from __future__ import annotations
 
 import sqlite3
-from datetime import datetime, timedelta, timezone
-from typing import Iterable
+from datetime import datetime
 
+from ..config import BOOTSTRAP_STATE_RESIDUAL_WINDOW_MIN, log_bootstrap_use
 from ..errors import SchedulerError
 from ..libbie.store import write_residual
-
-
-STATE_WINDOW_MIN = 30  # look for ratings within +/- this many minutes of boundary
 
 
 def _nearest_rating(
@@ -28,19 +25,16 @@ def _nearest_rating(
     boundary_iso: str,
     window_min: int,
 ) -> tuple[float | None, float | None, float | None]:
-    boundary = datetime.fromisoformat(boundary_iso)
-    lo = (boundary - timedelta(minutes=window_min)).isoformat(timespec="seconds")
-    hi = (boundary + timedelta(minutes=window_min)).isoformat(timespec="seconds")
     row = conn.execute(
         """
         SELECT r.mood, r.energy, r.productivity
         FROM ratings r
         JOIN events e ON e.id = r.event_id
-        WHERE e.timestamp BETWEEN ? AND ?
+        WHERE ABS(strftime('%s', e.timestamp) - strftime('%s', ?)) <= ?
         ORDER BY ABS(strftime('%s', e.timestamp) - strftime('%s', ?)) ASC
         LIMIT 1
         """,
-        (lo, hi, boundary_iso),
+        (boundary_iso, window_min * 60, boundary_iso),
     ).fetchone()
     if row is None:
         return (None, None, None)
@@ -81,8 +75,14 @@ def compute_and_store(
     actual_minutes = max(0.0, (end - start).total_seconds() / 60.0)
     duration_residual = actual_minutes - float(pred["pred_duration_min"])
 
-    observed_pre = _nearest_rating(conn, planned_start_iso, STATE_WINDOW_MIN)
-    observed_post = _nearest_rating(conn, actual_end_iso, STATE_WINDOW_MIN)
+    log_bootstrap_use(
+        conn,
+        "BOOTSTRAP_STATE_RESIDUAL_WINDOW_MIN",
+        BOOTSTRAP_STATE_RESIDUAL_WINDOW_MIN,
+    )
+    window = BOOTSTRAP_STATE_RESIDUAL_WINDOW_MIN
+    observed_pre = _nearest_rating(conn, planned_start_iso, window)
+    observed_post = _nearest_rating(conn, actual_end_iso, window)
 
     pre_res = (
         _sub(observed_pre[0], pred["pred_pre_mood"]),

@@ -9,12 +9,21 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Sequence
 
 from ..errors import DBError
 from . import db as _db
+
+# Module-level write lock. Every write_* function takes this before touching
+# the DB. The spec calls for "a single async write queue served by one
+# coroutine"; for v0 this lock satisfies the same invariant (no two writers
+# hold a transaction at once) without the queue ceremony. Reads are not
+# guarded — WAL mode handles those. RLock so write_rating etc. can call
+# write_event while still holding it.
+_WRITE_LOCK = threading.RLock()
 
 
 def _now_iso() -> str:
@@ -47,30 +56,31 @@ def write_event(
     Sean's text, CADEN's text, ratings, predictions, or residuals should
     always have an embedding so retrieval sees them.
     """
-    try:
-        cur = conn.execute(
-            "INSERT INTO events (timestamp, source, raw_text, meta_json) VALUES (?, ?, ?, ?)",
-            (
-                timestamp or _now_iso(),
-                source,
-                raw_text,
-                json.dumps(meta or {}, ensure_ascii=False, sort_keys=True),
-            ),
-        )
-        event_id = int(cur.lastrowid)
-        if embedding is not None:
-            blob = _db.pack_vector(embedding)
-            conn.execute(
-                "INSERT INTO event_embeddings (event_id, embedding) VALUES (?, ?)",
-                (event_id, blob),
+    with _WRITE_LOCK:
+        try:
+            cur = conn.execute(
+                "INSERT INTO events (timestamp, source, raw_text, meta_json) VALUES (?, ?, ?, ?)",
+                (
+                    timestamp or _now_iso(),
+                    source,
+                    raw_text,
+                    json.dumps(meta or {}, ensure_ascii=False, sort_keys=True),
+                ),
             )
-            conn.execute(
-                "INSERT INTO vec_events (rowid, embedding) VALUES (?, ?)",
-                (event_id, blob),
-            )
-        return event_id
-    except sqlite3.Error as e:
-        raise DBError(f"failed to write event (source={source!r}): {e}") from e
+            event_id = int(cur.lastrowid)
+            if embedding is not None:
+                blob = _db.pack_vector(embedding)
+                conn.execute(
+                    "INSERT INTO event_embeddings (event_id, embedding) VALUES (?, ?)",
+                    (event_id, blob),
+                )
+                conn.execute(
+                    "INSERT INTO vec_events (rowid, embedding) VALUES (?, ?)",
+                    (event_id, blob),
+                )
+            return event_id
+        except sqlite3.Error as e:
+            raise DBError(f"failed to write event (source={source!r}): {e}") from e
 
 
 # ---- ratings -----------------------------------------------------------------
@@ -88,44 +98,45 @@ def write_rating(
     embedding: Sequence[float] | None,
 ) -> int:
     """Write a rating row and mirror it into events as source='rating'."""
-    try:
-        cur = conn.execute(
-            """
-            INSERT INTO ratings
-              (event_id, mood, energy, productivity,
-               conf_mood, conf_energy, conf_productivity,
-               rationale, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (event_id, mood, energy, productivity,
-             c_mood, c_energy, c_productivity, rationale, _now_iso()),
-        )
-        rating_id = int(cur.lastrowid)
-    except sqlite3.Error as e:
-        raise DBError(f"failed to write rating for event {event_id}: {e}") from e
+    with _WRITE_LOCK:
+        try:
+            cur = conn.execute(
+                """
+                INSERT INTO ratings
+                  (event_id, mood, energy, productivity,
+                   conf_mood, conf_energy, conf_productivity,
+                   rationale, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (event_id, mood, energy, productivity,
+                 c_mood, c_energy, c_productivity, rationale, _now_iso()),
+            )
+            rating_id = int(cur.lastrowid)
+        except sqlite3.Error as e:
+            raise DBError(f"failed to write rating for event {event_id}: {e}") from e
 
-    mirror_text = (
-        f"Rating of event #{event_id}: "
-        f"mood={_fmt(mood)} energy={_fmt(energy)} productivity={_fmt(productivity)}.\n"
-        f"Rationale: {rationale}"
-    )
-    write_event(
-        conn,
-        source="rating",
-        raw_text=mirror_text,
-        embedding=embedding,
-        meta={
-            "rating_id": rating_id,
-            "event_id": event_id,
-            "mood": mood,
-            "energy": energy,
-            "productivity": productivity,
-            "confidence": {
-                "mood": c_mood, "energy": c_energy, "productivity": c_productivity,
+        mirror_text = (
+            f"Rating of event #{event_id}: "
+            f"mood={_fmt(mood)} energy={_fmt(energy)} productivity={_fmt(productivity)}.\n"
+            f"Rationale: {rationale}"
+        )
+        write_event(
+            conn,
+            source="rating",
+            raw_text=mirror_text,
+            embedding=embedding,
+            meta={
+                "rating_id": rating_id,
+                "event_id": event_id,
+                "mood": mood,
+                "energy": energy,
+                "productivity": productivity,
+                "confidence": {
+                    "mood": c_mood, "energy": c_energy, "productivity": c_productivity,
+                },
             },
-        },
-    )
-    return rating_id
+        )
+        return rating_id
 
 
 def _fmt(v: float | None) -> str:
@@ -141,27 +152,28 @@ def write_task(
     google_task_id: str | None,
     embedding: Sequence[float] | None,
 ) -> int:
-    try:
-        cur = conn.execute(
-            """
-            INSERT INTO tasks
-              (google_task_id, description, deadline_utc, status, created_at)
-            VALUES (?, ?, ?, 'open', ?)
-            """,
-            (google_task_id, description, deadline_iso, _now_iso()),
-        )
-        task_id = int(cur.lastrowid)
-    except sqlite3.Error as e:
-        raise DBError(f"failed to write task: {e}") from e
+    with _WRITE_LOCK:
+        try:
+            cur = conn.execute(
+                """
+                INSERT INTO tasks
+                  (google_task_id, description, deadline_utc, status, created_at)
+                VALUES (?, ?, ?, 'open', ?)
+                """,
+                (google_task_id, description, deadline_iso, _now_iso()),
+            )
+            task_id = int(cur.lastrowid)
+        except sqlite3.Error as e:
+            raise DBError(f"failed to write task: {e}") from e
 
-    write_event(
-        conn,
-        source="task",
-        raw_text=f"Task: {description} (deadline {deadline_iso})",
-        embedding=embedding,
-        meta={"task_id": task_id, "google_task_id": google_task_id, "deadline": deadline_iso},
-    )
-    return task_id
+        write_event(
+            conn,
+            source="task",
+            raw_text=f"Task: {description} (deadline {deadline_iso})",
+            embedding=embedding,
+            meta={"task_id": task_id, "google_task_id": google_task_id, "deadline": deadline_iso},
+        )
+        return task_id
 
 
 def link_task_event(
@@ -173,19 +185,20 @@ def link_task_event(
     planned_start_iso: str,
     planned_end_iso: str,
 ) -> int:
-    try:
-        cur = conn.execute(
-            """
-            INSERT INTO task_events
-              (task_id, google_event_id, chunk_index, chunk_count, planned_start, planned_end)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (task_id, google_event_id, chunk_index, chunk_count,
-             planned_start_iso, planned_end_iso),
-        )
-        return int(cur.lastrowid)
-    except sqlite3.Error as e:
-        raise DBError(f"failed to link task_event: {e}") from e
+    with _WRITE_LOCK:
+        try:
+            cur = conn.execute(
+                """
+                INSERT INTO task_events
+                  (task_id, google_event_id, chunk_index, chunk_count, planned_start, planned_end)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (task_id, google_event_id, chunk_index, chunk_count,
+                 planned_start_iso, planned_end_iso),
+            )
+            return int(cur.lastrowid)
+        except sqlite3.Error as e:
+            raise DBError(f"failed to link task_event: {e}") from e
 
 
 def complete_task(
@@ -193,20 +206,21 @@ def complete_task(
     task_id: int,
     completed_at_iso: str,
 ) -> None:
-    try:
-        conn.execute(
-            "UPDATE tasks SET status='complete', completed_at_utc=? WHERE id=?",
-            (completed_at_iso, task_id),
-        )
-        conn.execute(
-            """
-            UPDATE task_events SET actual_end=?
-            WHERE task_id=? AND actual_end IS NULL
-            """,
-            (completed_at_iso, task_id),
-        )
-    except sqlite3.Error as e:
-        raise DBError(f"failed to complete task {task_id}: {e}") from e
+    with _WRITE_LOCK:
+        try:
+            conn.execute(
+                "UPDATE tasks SET status='complete', completed_at_utc=? WHERE id=?",
+                (completed_at_iso, task_id),
+            )
+            conn.execute(
+                """
+                UPDATE task_events SET actual_end=?
+                WHERE task_id=? AND actual_end IS NULL
+                """,
+                (completed_at_iso, task_id),
+            )
+        except sqlite3.Error as e:
+            raise DBError(f"failed to complete task {task_id}: {e}") from e
 
 
 # ---- predictions -------------------------------------------------------------
@@ -222,54 +236,55 @@ def write_prediction(
     rationale: str,
     embedding: Sequence[float] | None,
 ) -> int:
-    try:
-        cur = conn.execute(
-            """
-            INSERT INTO predictions (
-              task_id, google_event_id, pred_duration_min,
-              pred_pre_mood, pred_pre_energy, pred_pre_productivity,
-              pred_post_mood, pred_post_energy, pred_post_productivity,
-              conf_duration,
-              conf_pre_mood, conf_pre_energy, conf_pre_productivity,
-              conf_post_mood, conf_post_energy, conf_post_productivity,
-              rationale,
-              created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                task_id, google_event_id, int(round(predicted_duration_min)),
-                pre[0], pre[1], pre[2],
-                post[0], post[1], post[2],
-                confidences.get("duration"),
-                confidences.get("pre_mood"), confidences.get("pre_energy"), confidences.get("pre_productivity"),
-                confidences.get("post_mood"), confidences.get("post_energy"), confidences.get("post_productivity"),
-                rationale,
-                _now_iso(),
-            ),
-        )
-        prediction_id = int(cur.lastrowid)
-    except sqlite3.Error as e:
-        raise DBError(f"failed to write prediction for task {task_id}: {e}") from e
+    with _WRITE_LOCK:
+        try:
+            cur = conn.execute(
+                """
+                INSERT INTO predictions (
+                  task_id, google_event_id, pred_duration_min,
+                  pred_pre_mood, pred_pre_energy, pred_pre_productivity,
+                  pred_post_mood, pred_post_energy, pred_post_productivity,
+                  conf_duration,
+                  conf_pre_mood, conf_pre_energy, conf_pre_productivity,
+                  conf_post_mood, conf_post_energy, conf_post_productivity,
+                  rationale,
+                  created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    task_id, google_event_id, int(round(predicted_duration_min)),
+                    pre[0], pre[1], pre[2],
+                    post[0], post[1], post[2],
+                    confidences.get("duration"),
+                    confidences.get("pre_mood"), confidences.get("pre_energy"), confidences.get("pre_productivity"),
+                    confidences.get("post_mood"), confidences.get("post_energy"), confidences.get("post_productivity"),
+                    rationale,
+                    _now_iso(),
+                ),
+            )
+            prediction_id = int(cur.lastrowid)
+        except sqlite3.Error as e:
+            raise DBError(f"failed to write prediction for task {task_id}: {e}") from e
 
-    write_event(
-        conn,
-        source="prediction",
-        raw_text=(
-            f"Prediction for task #{task_id}: duration={predicted_duration_min:.0f}min. "
-            f"Pre mood/energy/productivity={pre}. Post={post}. Rationale: {rationale}"
-        ),
-        embedding=embedding,
-        meta={
-            "prediction_id": prediction_id,
-            "task_id": task_id,
-            "google_event_id": google_event_id,
-            "pre": pre,
-            "post": post,
-            "duration_min": predicted_duration_min,
-            "confidence": confidences,
-        },
-    )
-    return prediction_id
+        write_event(
+            conn,
+            source="prediction",
+            raw_text=(
+                f"Prediction for task #{task_id}: duration={predicted_duration_min:.0f}min. "
+                f"Pre mood/energy/productivity={pre}. Post={post}. Rationale: {rationale}"
+            ),
+            embedding=embedding,
+            meta={
+                "prediction_id": prediction_id,
+                "task_id": task_id,
+                "google_event_id": google_event_id,
+                "pre": pre,
+                "post": post,
+                "duration_min": predicted_duration_min,
+                "confidence": confidences,
+            },
+        )
+        return prediction_id
 
 
 def write_residual(
@@ -281,49 +296,50 @@ def write_residual(
     post_residuals: tuple[float | None, float | None, float | None],
     embedding: Sequence[float] | None,
 ) -> int:
-    try:
-        cur = conn.execute(
-            """
-            INSERT INTO residuals (
-              prediction_id,
-              duration_actual_min, duration_residual_min,
-              pre_state_residual_mood, pre_state_residual_energy, pre_state_residual_productivity,
-              post_state_residual_mood, post_state_residual_energy, post_state_residual_productivity,
-              created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                prediction_id,
-                None if duration_actual_min is None else int(round(duration_actual_min)),
-                None if duration_residual_min is None else int(round(duration_residual_min)),
-                pre_residuals[0], pre_residuals[1], pre_residuals[2],
-                post_residuals[0], post_residuals[1], post_residuals[2],
-                _now_iso(),
-            ),
-        )
-        residual_id = int(cur.lastrowid)
-    except sqlite3.Error as e:
-        raise DBError(f"failed to write residual for prediction {prediction_id}: {e}") from e
+    with _WRITE_LOCK:
+        try:
+            cur = conn.execute(
+                """
+                INSERT INTO residuals (
+                  prediction_id,
+                  duration_actual_min, duration_residual_min,
+                  pre_state_residual_mood, pre_state_residual_energy, pre_state_residual_productivity,
+                  post_state_residual_mood, post_state_residual_energy, post_state_residual_productivity,
+                  created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    prediction_id,
+                    None if duration_actual_min is None else int(round(duration_actual_min)),
+                    None if duration_residual_min is None else int(round(duration_residual_min)),
+                    pre_residuals[0], pre_residuals[1], pre_residuals[2],
+                    post_residuals[0], post_residuals[1], post_residuals[2],
+                    _now_iso(),
+                ),
+            )
+            residual_id = int(cur.lastrowid)
+        except sqlite3.Error as e:
+            raise DBError(f"failed to write residual for prediction {prediction_id}: {e}") from e
 
-    write_event(
-        conn,
-        source="residual",
-        raw_text=(
-            f"Residuals for prediction #{prediction_id}: "
-            f"duration_residual={duration_residual_min}min, "
-            f"pre={pre_residuals}, post={post_residuals}"
-        ),
-        embedding=embedding,
-        meta={
-            "residual_id": residual_id,
-            "prediction_id": prediction_id,
-            "duration_actual_min": duration_actual_min,
-            "duration_residual_min": duration_residual_min,
-            "pre": pre_residuals,
-            "post": post_residuals,
-        },
-    )
-    return residual_id
+        write_event(
+            conn,
+            source="residual",
+            raw_text=(
+                f"Residuals for prediction #{prediction_id}: "
+                f"duration_residual={duration_residual_min}min, "
+                f"pre={pre_residuals}, post={post_residuals}"
+            ),
+            embedding=embedding,
+            meta={
+                "residual_id": residual_id,
+                "prediction_id": prediction_id,
+                "duration_actual_min": duration_actual_min,
+                "duration_residual_min": duration_residual_min,
+                "pre": pre_residuals,
+                "post": post_residuals,
+            },
+        )
+        return residual_id
 
 
 # ---- reads convenience -------------------------------------------------------

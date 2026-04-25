@@ -97,11 +97,17 @@ class TasksClient:
 def _to_task(t: dict) -> GTask:
     due = _parse(t.get("due"))
     completed_at = _parse(t.get("completed"))
+    status = t.get("status")
+    if not status:
+        raise GoogleSyncError(
+            f"Google Tasks API returned task {t.get('id')!r} with no status field; "
+            f"this violates the API contract."
+        )
     return GTask(
         id=t["id"],
         title=t.get("title") or "(no title)",
         due=due,
-        status=t.get("status") or "needsAction",
+        status=status,
         completed_at=completed_at,
         raw=t,
     )

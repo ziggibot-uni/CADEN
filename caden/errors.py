@@ -36,6 +36,16 @@ class LLMError(CadenError):
     """Ollama chat / generate call failed, or repair ultimately failed."""
 
 
+class LLMAborted(LLMError):
+    """A streaming LLM call was deliberately aborted mid-stream so a higher-
+    priority call could take Ollama's single inference slot.
+
+    Background callers (e.g. the rater) catch this and re-queue themselves;
+    foreground callers should never see it because they don't pass
+    ``priority="background"`` to the client.
+    """
+
+
 class LLMRepairError(LLMError):
     """Repair layer could not recover the required shape from the model."""
 

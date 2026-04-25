@@ -9,15 +9,16 @@ framework stores those as NULL, truthfully.
 from __future__ import annotations
 
 import sqlite3
-from typing import Sequence
+from typing import Callable, Sequence
 
 from ..config import (
+    BOOTSTRAP_FOCAL_TEXT_TRUNCATE_CHARS,
     BOOTSTRAP_RETRIEVAL_MIN_K,
     BOOTSTRAP_RETRIEVAL_TOP_K,
     BOOTSTRAP_RETRIEVAL_TRUNCATE_CHARS,
     log_bootstrap_use,
 )
-from ..errors import RaterError, LLMError, LLMRepairError
+from ..errors import RaterError, LLMAborted, LLMError, LLMRepairError
 from ..libbie import retrieve
 from ..libbie.store import Event, write_rating
 from ..llm.client import OllamaClient
@@ -109,11 +110,23 @@ def rate_event(
     event_embedding: list[float],
     llm: OllamaClient,
     embedder: Embedder,
+    *,
+    on_dispatch: "Callable[[], None] | None" = None,
+    on_first_token: "Callable[[], None] | None" = None,
+    on_token: "Callable[[str], None] | None" = None,
 ) -> int | None:
     """Produce a rating for `event`, write it to Libbie, return the rating id.
 
     Returns None when the event is not eligible for rating (intake, structural).
     Raises RaterError on unrecoverable failure (LLM / repair / DB).
+    Re-raises LLMAborted unchanged so the caller can re-queue this event;
+    the rater never holds the slot when chat needs it.
+
+    The optional callbacks let the UI surface rater state in real time:
+      - on_dispatch: HTTP request started (we got past the priority gate
+        and Ollama is now streaming for us)
+      - on_first_token: first content byte arrived (proof of life)
+      - on_token: every content chunk (UI progress / token counter)
     """
     # Spec: intake events are not rated (they are meta-content about Sean,
     # not events Sean experienced). They still participate in retrieval.
@@ -152,16 +165,62 @@ def rate_event(
         )
     context_block = _format_context(neighbours)
 
+    # Truncate the focal event text. Mood/energy/productivity signal is
+    # carried by tone and content type; a 10k-char journal entry's first
+    # ~2k chars carry the same affective signal as the whole, and feeding
+    # the rest dilutes the model's attention away from the rating task.
+    log_bootstrap_use(
+        conn,
+        "BOOTSTRAP_FOCAL_TEXT_TRUNCATE_CHARS",
+        BOOTSTRAP_FOCAL_TEXT_TRUNCATE_CHARS,
+    )
+    focal_cap = BOOTSTRAP_FOCAL_TEXT_TRUNCATE_CHARS
+    if len(event.raw_text) > focal_cap:
+        event_text_block = event.raw_text[:focal_cap] + "…"
+    else:
+        event_text_block = event.raw_text
+
     user_prompt = (
         f"Event to rate (id={event.id}, source={event.source}, ts={event.timestamp}):\n"
-        f"---\n{event.raw_text}\n---\n\n"
+        f"---\n{event_text_block}\n---\n\n"
         f"Relevant past memory from Libbie:\n{context_block}\n\n"
         f"Retrieved context count: {len(neighbours)}.\n"
         f"Rate this event per the system instructions."
     )
 
     try:
-        raw = llm.chat(SYSTEM_PROMPT, user_prompt, temperature=0.2, format_json=True)
+        first = {"seen": False}
+
+        def _on_open() -> None:
+            if on_dispatch is not None:
+                on_dispatch()
+
+        def _on_content(chunk: str) -> None:
+            if not first["seen"]:
+                first["seen"] = True
+                if on_first_token is not None:
+                    on_first_token()
+            if on_token is not None:
+                on_token(chunk)
+
+        # Streaming + background priority. format_json keeps Ollama in
+        # JSON mode (still streamed). max_tokens caps a runaway model so
+        # the slot is never held forever — chat preempts via the abort
+        # path before that, but this is a belt-and-braces upper bound.
+        raw, _thinking = llm.chat_stream(
+            SYSTEM_PROMPT,
+            user_prompt,
+            temperature=0.2,
+            format_json=True,
+            max_tokens=1024,
+            priority="background",
+            on_open=_on_open,
+            on_content=_on_content,
+        )
+    except LLMAborted:
+        # Bubble up unchanged: this is not a failure, it's cooperative
+        # yielding. The caller (chat queue) will re-enqueue this event.
+        raise
     except LLMError as e:
         raise RaterError(f"rater LLM call failed: {e}") from e
 

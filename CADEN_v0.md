@@ -13,6 +13,7 @@ The canonical spec remains in `CADEN.md` and is not to be edited here.
 - CADEN must keep learning as Sean changes over time
 - no hand-written heuristics; all behavior is learned. Improve mechanisms, not
   rules. One bespoke rule is pollution; the "just one more rule" trap is fatal.
+- "bootstrapping" or pre-decided limits/thresholds (e.g. max K, truncate chars, max events) are forbidden if they bypass LLM decision-making. The LLM must make the calls using advice/experience, even if it makes bad calls initially, so that a residual is generated to learn from.
 - it is acceptable for CADEN to suck for a while during cold start; that is
   cheaper than permanent pollution
 
@@ -297,14 +298,19 @@ Every other doc that mentions one of these defers to this section.
 
 ### Errors and "loud failure" semantics
 - one root error class `CadenError` in `caden/errors.py`, with subclasses
-  per subsystem (`LibbieError`, `LLMError`, `RaterError`, `SchedulerError`,
-  `GoogleSyncError`, `SprocketError`, `UIError`)
+  per subsystem (`ConfigError`, `BootError`, `DBError`, `EmbedError`,
+  `LLMError`, `LLMAborted`, `LLMRepairError`, `RaterError`,
+  `SchedulerError`, `GoogleSyncError`, plus future `SprocketError`,
+  `UIError`)
 - "loud failure" means: raise the relevant `CadenError` subclass with a
   human-readable message and the original exception chained
 - the Textual main loop catches `CadenError` at the top level, displays an
   error banner with the message + a "copy details" affordance, and halts
   the failing subsystem (its async tasks are cancelled). Other subsystems
   keep running.
+- the error banner is implemented as a Textual modal screen in
+  `caden/ui/_error.py`. Same widget is reused for boot-time and runtime
+  failures.
 - catastrophic failures (DB corruption, sqlite-vec missing) raise during
   boot and exit the process with a non-zero code and the same banner shown
   in the terminal Textual launched from
@@ -330,6 +336,10 @@ Every other doc that mentions one of these defers to this section.
   system locale and cached in `settings.toml` as `display_tz`
 - Google Calendar items come back with their own tzinfo; CADEN converts to
   UTC on read, back to display tz only at render time
+- display format is 12-hour AM/PM. Anywhere times are rendered to Sean
+  (chat replies, dashboard panels, modal forms), 24-hour times are
+  rewritten to 12-hour. Formatting helpers live in `caden/util/timefmt.py`
+  so every surface uses the same conversion.
 
 ### Schema (v0) — concrete
 Single sqlite DB at `~/.local/share/caden/caden.db`, sqlite-vec loaded as
@@ -367,6 +377,21 @@ Each typed-table row also gets an `events` row with `source = "rating"` /
 retrieval works (the `raw_text` is a serialized summary of the row; the
 `event_metadata` row links back via key=`structured_id`, value=row id).
 
+Embedding storage detail: the embedding is not a column on `events`. It
+lives in a sibling table `event_embeddings (event_id FK, embedding BLOB)`
+plus a `vec_events` sqlite-vec virtual table for ANN search. Functionally
+equivalent to a column; the split keeps event-table scans cheap (no BLOB
+bloat) and lets vec_events be rebuilt independently if its index format
+changes.
+
+v0_extras additions (one Alembic revision past initial): `predictions`
+gains a `rationale TEXT` column (the LLM's short explanation for its
+prediction, stored alongside the numbers). `task_events` gains
+`planned_start TEXT`, `planned_end TEXT`, and `actual_end TEXT NULL` so
+the residual loop can find the scheduled window and the realized end
+without re-reading Google. These are not new mechanisms; they are
+operational fields the residual computation needs.
+
 ### Confidence representation
 - always REAL between 0.0 and 1.0
 - NULL means "unknown" (estimator did not have enough data to predict)
@@ -400,9 +425,21 @@ v0 uses. New keys can appear at any time without migration.
 - library: `json_repair` for repair, `pydantic` for schema validation
 - repair pipeline: raw text → strip code fences → `json_repair.loads` →
   `pydantic` validate against expected model → return typed object, or
-  raise `LLMError` with original text + repair attempts attached
+  raise `LLMRepairError` with original text + repair attempts attached
 - callers never see raw LLM output. They get either a validated object
-  or a `LLMError`.
+  or a `LLMError` / `LLMRepairError`.
+
+### LLM client priority gate
+- ollama serves one request at a time well; concurrent requests degrade
+  latency. `caden/llm/client.py` owns a single-slot semaphore so only one
+  call hits ollama at a time.
+- the slot is priority-aware: foreground requests (chat reply, add-task
+  scheduling) preempt background requests (rater, why-rationale worker).
+  A background call in flight when a foreground request arrives is
+  raised as `LLMAborted`; the background worker catches that specific
+  class and re-queues itself.
+- this is mechanism, not heuristic: it preserves the "chat is
+  responsive" property without encoding any rule about Sean.
 
 ### LLM context budgeting
 - top-K = 20 retrieved memories per prompt (combined-score ranked)
@@ -426,23 +463,42 @@ v0 uses. New keys can appear at any time without migration.
   is acceptable here; it's two for-loops, not statistics
 
 ### Logging
-- `structlog` writing JSON lines to `~/.local/share/caden/logs/caden.log`
+- `structlog` setup lives in `caden/log.py`, writing JSON lines to
+  `~/.local/share/caden/logs/caden.log`
 - log lines also captured as low-priority events (source =
   `caden_log`) so CADEN can reason about its own behavior over time
 - log level configurable; default INFO
 
+### Diagnostic log (TUI escape hatch)
+- `caden/diag.py` writes a parallel human-readable plain-text log to
+  `~/.caden/diag.log`. Every LLM call, every scheduler outcome, every
+  raised `CadenError` gets one line.
+- rationale: Textual's TUI is hard to copy text out of mid-session.
+  The diag log gives Sean (and any debugging LLM) a tail-able file with
+  the same information the JSON log carries, in a form a human can read
+  without `jq`.
+- diag is auxiliary. If diag write fails, the original event is
+  unaffected; the failure is logged through structlog and that's it.
+  This is the second permitted partial success in CADEN, and like
+  `why`, it's permitted because diag is purely diagnostic.
+
 ### Concrete v0 first-time scheduling rule
 When a task arrives and there is no relevant history:
-- default predicted duration: 60 minutes (your stated preference)
 - CADEN reads existing Google Calendar items between now and the deadline
   across all CADEN-enabled calendars (see "Google scope" below)
-- the LLM is given: the task description, the deadline, a list of free
-  blocks of length ≥ predicted duration sorted by start time, recent
-  events from Libbie's retrieval (so it can see what Sean has been doing)
-- the LLM picks one block; if it can't, it picks the earliest block that
-  fits and notes its low confidence
-- prediction bundle is emitted with confidence = 0.1 across all axes
-  (this is a bootstrap value, see below)
+- the LLM is given: the task description, the deadline, the calendar
+  events in that window, and recent events from Libbie's retrieval
+  (so it can see what Sean has been doing)
+- the LLM picks a concrete start/end and emits its own duration and
+  confidences. The framework imposes no default duration and no
+  confidence floor. "Estimators never fake a number" applies to the
+  framework, not to the LLM — the model is allowed to reason from
+  whatever signal it has (including "none") and own the result.
+- duration_min on the schedule block is `end - start` by definition;
+  it is not an LLM field and not a fallback.
+- if the LLM genuinely cannot estimate a state axis, it returns null
+  for that axis and null confidence; the framework writes the nulls
+  through verbatim. NULL means unknown.
 - no chunking in v0 first-schedules. Chunking unlocks once duration
   predictions earn higher confidence.
 - no working-hours constraint imposed by CADEN. Working-time preferences
@@ -484,13 +540,28 @@ On completion at time `T`:
 
 ### Chat events
 - only Sean's messages are stored as events with embeddings
+  (`source = 'sean_chat'`)
 - CADEN's responses are NOT stored as events. They are visible in the
   chat panel during the session but ephemeral from a memory standpoint.
 - conversation coherence within a session: CADEN's last few responses
-  are passed as immediate context to the next LLM call, but never
-  persisted as events. They do not enter retrieval.
+  live in a process-local `deque` (cap 4) inside the chat widget and
+  are passed as immediate context to the next LLM call. They are never
+  persisted, never embedded, never retrieved. The deque empties on
+  shutdown.
+- retrieval explicitly excludes any `caden_chat` source as defense in
+  depth, even though no such event should ever be written.
 - this keeps memory pristine to Sean's signal and avoids CADEN
   retrieving its own old answers as if they were ground truth.
+
+### Chat context packaging
+- `caden/libbie/curate.py` owns a `package_chat_context()` function
+  that assembles the user-prompt body for chat: Libbie retrieval +
+  "live world" context (today's calendar, open tasks). Single place
+  so the chat widget, add-task scheduler, and rater don't each
+  reinvent context shape.
+- this is mechanism, not policy: curate decides nothing about what
+  matters; it just composes what retrieval and the live-world readers
+  return.
 
 ### PM and chat
 - dashboard chat events have `project_id = NULL` always
@@ -535,12 +606,19 @@ Some numbers must exist before learning kicks in. To stay clear of
   audit surface (post-v0)
 
 Concrete bootstrap values used in v0:
-- `BOOTSTRAP_DEFAULT_DURATION_MIN = 60` (first-schedule duration)
-- `BOOTSTRAP_FIRST_SCHEDULE_CONFIDENCE = 0.1`
 - `BOOTSTRAP_COMPLETION_POLL_SECONDS = 60`
 - `BOOTSTRAP_PROMPT_TOKEN_BUDGET = 6000`
 - `BOOTSTRAP_RETRIEVAL_TOP_K = 20`
 - `BOOTSTRAP_RETRIEVAL_TRUNCATE_CHARS = 500`
+- `BOOTSTRAP_RETRIEVAL_MIN_K = 5` (the floor below which prompt-budget
+  truncation raises `LLMError` instead of silently dropping signal)
+- `BOOTSTRAP_FOCAL_TEXT_TRUNCATE_CHARS = 2000` (cap on the focal event
+  body itself when fed to the rater / chat prompt; complements the
+  per-retrieved-memory truncate)
+- `BOOTSTRAP_SCHEDULER_MAX_CALENDAR_EVENTS = 40` (cap on calendar items
+  passed to the scheduler LLM when picking a block)
+- `BOOTSTRAP_SCHEDULER_EVENT_SUMMARY_CHARS = 80` (per-calendar-event
+  summary truncate at the same surface)
 - `BOOTSTRAP_SANDBOX_TIMEOUT_SECONDS = 30` (Sprocket; not v0)
 - `BOOTSTRAP_REFIT_MIN_RESIDUALS = 50` (learning system; not v0)
 - `BOOTSTRAP_TEMPLATE_CLUSTER_MIN = 5` (Sprocket; not v0)
@@ -571,16 +649,19 @@ caden/
   main.py                # entry point: boot sequence + launch Textual app
   config.py              # loads settings (ollama model, paths, google creds)
   errors.py              # CadenError hierarchy; nothing is caught silently
+  log.py                 # structlog setup (JSON log file)
+  diag.py                # plain-text diagnostic log (TUI escape hatch)
 
   libbie/                # the memory layer; owns the DB
     __init__.py
     db.py                # sqlite + sqlite-vec connection, schema, migrations
     store.py             # write events, write ratings, write predictions
     retrieve.py          # embedding + metadata search
+    curate.py            # package_chat_context(): retrieval + live world
 
   llm/
     __init__.py
-    client.py            # ollama wrapper
+    client.py            # ollama wrapper + priority-aware single-slot gate
     repair.py            # tolerant parsing layer between client and callers
     embed.py             # nomic-embed-text wrapper
 
@@ -599,7 +680,8 @@ caden/
     auth.py              # OAuth dance + token refresh
     calendar.py          # read + write calendar events
     tasks.py             # read + write tasks
-    webhook.py or poll.py  # detect external changes (completion, edits)
+    poll.py              # poll Google Tasks for completion transitions
+                         # (webhook deferred; local desktop has no public URL)
 
   ui/
     __init__.py
@@ -607,6 +689,13 @@ caden/
     dashboard.py         # today | chat | next 7 days
     chat.py              # middle panel widget
     add_task.py          # add-task button + modal form
+    edit_task.py         # edit-task modal (description / deadline)
+    _error.py            # error banner modal screen (boot + runtime)
+    services.py          # DI bundle: config, db, llm, embedder for widgets
+
+  util/
+    __init__.py
+    timefmt.py           # 12-hour AM/PM display helpers
 ```
 
 ### Boot sequence
@@ -619,6 +708,13 @@ Every step must fail loudly and stop if it cannot complete.
 6. launch Textual app
 
 If any of these fails, CADEN exits with a readable error. No partial startup.
+
+Sole softening: step 5 is allowed to be absent. If the Google credentials
+file is missing, CADEN still boots and runs chat-only; the dashboard
+renders "Google not configured" in the today / 7-day panels. Once
+credentials are present, all subsequent Google failures are loud as
+specified. This single allowance exists because chat must work before
+Google is wired up; every other failure mode remains loud.
 
 ### Schema (v0)
 Single DB, multiple tables, all keyed by integer id + timestamp.
@@ -746,4 +842,4 @@ mappings. Since those ideas are retired, the staging is too.
 
 Every trigger type is its own partition for case matching. A calendar event
 approaching is never the same situation as a thought dump, even if Sean's
-state looks identical.
+state looks identical

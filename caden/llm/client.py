@@ -8,17 +8,24 @@ HTTP call fails loudly with the real error.
 from __future__ import annotations
 
 import json
+import threading
 import time
+from contextlib import contextmanager
 from typing import Callable, Iterator
 
 import httpx
 
 from .. import diag
-from ..errors import LLMError
+from ..errors import LLMAborted, LLMError
 
 # No read timeout for generation: streaming delivers its own liveness signal
 # (tokens flowing). Connect/write still time out loudly.
 _TIMEOUT = httpx.Timeout(connect=5.0, read=None, write=30.0, pool=5.0)
+
+# How long a background call sleeps between attempts to acquire the slot
+# while a foreground waiter is queued ahead of it. Short enough that the
+# rater feels responsive when chat finishes, long enough not to spin.
+_BACKGROUND_POLL_INTERVAL_S = 0.05
 
 
 class OllamaClient:
@@ -26,9 +33,87 @@ class OllamaClient:
         self.base_url = base_url.rstrip("/")
         self.model = model
         self._client = httpx.Client(base_url=self.base_url, timeout=_TIMEOUT)
+        # Ollama serves one inference at a time per model by default
+        # (OLLAMA_NUM_PARALLEL=1). Without our own gate, a long-running
+        # background call (the rater) would queue ahead of a chat request
+        # at Ollama itself, with no way to preempt. We serialise here so
+        # we can implement priority + abort in the client.
+        self._slot = threading.Lock()
+        # Set whenever a foreground caller is waiting for or holding the
+        # slot. Background streaming calls poll this between chunks and
+        # abort (raising LLMAborted) when it goes high, releasing the slot
+        # so the foreground caller goes through immediately.
+        self._fg_waiting = threading.Event()
+        # Count of foreground waiters so concurrent fg requests don't
+        # clear the flag while another fg is still queued.
+        self._fg_waiters = 0
+        self._fg_waiters_lock = threading.Lock()
 
     def close(self) -> None:
         self._client.close()
+
+    # --- priority gate -------------------------------------------------------
+
+    def fg_waiting(self) -> bool:
+        """True when a foreground caller is queued or active.
+
+        Background streaming loops consult this to decide whether to abort
+        and yield the slot.
+        """
+        return self._fg_waiting.is_set()
+
+    @contextmanager
+    def _acquire(self, priority: str) -> Iterator[None]:
+        """Acquire the single Ollama inference slot.
+
+        priority="foreground": signal intent immediately, then block on the
+        slot. Other foregrounds will queue behind us in lock-acquire order;
+        any background already holding the slot will see ``fg_waiting`` go
+        high and abort within one chunk.
+
+        priority="background": never hold the slot while a foreground is
+        waiting. Yields cooperatively until the slot is free AND no fg is
+        queued.
+        """
+        if priority == "foreground":
+            with self._fg_waiters_lock:
+                self._fg_waiters += 1
+                self._fg_waiting.set()
+            try:
+                self._slot.acquire()
+            except BaseException:
+                with self._fg_waiters_lock:
+                    self._fg_waiters -= 1
+                    if self._fg_waiters == 0:
+                        self._fg_waiting.clear()
+                raise
+            try:
+                with self._fg_waiters_lock:
+                    self._fg_waiters -= 1
+                    if self._fg_waiters == 0:
+                        self._fg_waiting.clear()
+                yield
+            finally:
+                self._slot.release()
+        elif priority == "background":
+            while True:
+                if self._fg_waiting.is_set():
+                    time.sleep(_BACKGROUND_POLL_INTERVAL_S)
+                    continue
+                if not self._slot.acquire(timeout=_BACKGROUND_POLL_INTERVAL_S):
+                    continue
+                # Re-check after acquire: a fg waiter could have set the
+                # flag between our check and our acquire. Yield if so.
+                if self._fg_waiting.is_set():
+                    self._slot.release()
+                    continue
+                break
+            try:
+                yield
+            finally:
+                self._slot.release()
+        else:
+            raise ValueError(f"unknown priority: {priority!r}")
 
     # --- health checks used by boot sequence ---------------------------------
 
@@ -69,12 +154,18 @@ class OllamaClient:
         *,
         temperature: float = 0.3,
         format_json: bool = False,
+        priority: str = "foreground",
     ) -> str:
         """Single-turn chat. Returns the raw assistant text.
 
         format_json=True asks ollama for strict JSON mode when the caller wants
         structured output. Repair still runs on top; strict JSON mode just
         reduces how much repair has to do.
+
+        priority controls the priority lock; see ``_acquire``. Background
+        non-streaming calls cannot be aborted mid-flight (the HTTP request
+        is one blocking round-trip), so prefer ``chat_stream`` for anything
+        that needs to yield to chat.
         """
         body = {
             "model": self.model,
@@ -87,12 +178,13 @@ class OllamaClient:
         }
         if format_json:
             body["format"] = "json"
-        try:
-            r = self._client.post("/api/chat", json=body)
-            r.raise_for_status()
-            data = r.json()
-        except httpx.HTTPError as e:
-            raise LLMError(f"ollama /api/chat failed: {e}") from e
+        with self._acquire(priority):
+            try:
+                r = self._client.post("/api/chat", json=body)
+                r.raise_for_status()
+                data = r.json()
+            except httpx.HTTPError as e:
+                raise LLMError(f"ollama /api/chat failed: {e}") from e
         msg = data.get("message") or {}
         content = msg.get("content")
         if not isinstance(content, str) or not content.strip():
@@ -109,6 +201,7 @@ class OllamaClient:
         think: bool = False,
         max_tokens: int | None = None,
         repeat_penalty: float | None = None,
+        priority: str = "foreground",
         on_open: Callable[[], None] | None = None,
         on_content: Callable[[str], None] | None = None,
         on_thinking: Callable[[str], None] | None = None,
@@ -169,42 +262,52 @@ class OllamaClient:
             + "options: " + json.dumps(options) + "\n"
             + "think: " + str(bool(think)) + "\n"
             + "format_json: " + str(bool(format_json)) + "\n"
+            + "priority: " + priority + "\n"
             + "system (" + str(len(system)) + " chars):\n" + system + "\n"
             + "user (" + str(len(user)) + " chars):\n" + user,
         )
         t0 = time.monotonic()
+        aborted = False
         try:
-            with self._client.stream("POST", "/api/chat", json=body) as r:
-                r.raise_for_status()
-                if on_open is not None:
-                    on_open()
-                for line in r.iter_lines():
-                    if not line:
-                        continue
-                    try:
-                        event = json.loads(line)
-                    except json.JSONDecodeError as e:
-                        raise LLMError(
-                            f"ollama stream sent non-JSON line: {line!r} ({e})"
-                        ) from e
-                    if "error" in event:
-                        raise LLMError(f"ollama stream error: {event['error']!r}")
-                    msg = event.get("message") or {}
-                    thought = msg.get("thinking") or ""
-                    chunk = msg.get("content") or ""
-                    if thought:
-                        thinking_parts.append(thought)
-                        thinking_chunk_count += 1
-                        if on_thinking is not None:
-                            on_thinking(thought)
-                    if chunk:
-                        content_parts.append(chunk)
-                        chunk_count += 1
-                        if on_content is not None:
-                            on_content(chunk)
-                    if event.get("done"):
-                        last_done_event = event
-                        break
+            with self._acquire(priority):
+                with self._client.stream("POST", "/api/chat", json=body) as r:
+                    r.raise_for_status()
+                    if on_open is not None:
+                        on_open()
+                    for line in r.iter_lines():
+                        # Background calls yield mid-stream when a
+                        # foreground caller queues up. We close the HTTP
+                        # stream by breaking out of the with-block and
+                        # raise LLMAborted so the caller can re-queue.
+                        if priority == "background" and self._fg_waiting.is_set():
+                            aborted = True
+                            break
+                        if not line:
+                            continue
+                        try:
+                            event = json.loads(line)
+                        except json.JSONDecodeError as e:
+                            raise LLMError(
+                                f"ollama stream sent non-JSON line: {line!r} ({e})"
+                            ) from e
+                        if "error" in event:
+                            raise LLMError(f"ollama stream error: {event['error']!r}")
+                        msg = event.get("message") or {}
+                        thought = msg.get("thinking") or ""
+                        chunk = msg.get("content") or ""
+                        if thought:
+                            thinking_parts.append(thought)
+                            thinking_chunk_count += 1
+                            if on_thinking is not None:
+                                on_thinking(thought)
+                        if chunk:
+                            content_parts.append(chunk)
+                            chunk_count += 1
+                            if on_content is not None:
+                                on_content(chunk)
+                        if event.get("done"):
+                            last_done_event = event
+                            break
         except httpx.HTTPError as e:
             diag.log("llm.chat_stream ✗ http error", repr(e))
             raise LLMError(f"ollama /api/chat stream failed: {e}") from e
@@ -212,6 +315,19 @@ class OllamaClient:
         thinking = "".join(thinking_parts)
         elapsed = time.monotonic() - t0
         done_reason = (last_done_event or {}).get("done_reason", "?")
+
+        if aborted:
+            diag.log(
+                "llm.chat_stream ⏸ aborted (yielded to foreground)",
+                f"elapsed: {elapsed:.1f}s\n"
+                f"content_chunks: {chunk_count}  ({len(content)} chars)\n"
+                f"thinking_chunks: {thinking_chunk_count}  ({len(thinking)} chars)",
+            )
+            raise LLMAborted(
+                f"background LLM call aborted after {elapsed:.1f}s "
+                f"({chunk_count} content chunks, {thinking_chunk_count} "
+                f"thinking chunks) so a foreground call could take the slot."
+            )
 
         diag.log(
             "llm.chat_stream ← response",

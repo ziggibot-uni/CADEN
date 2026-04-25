@@ -57,6 +57,9 @@ def connect(db_path: Path) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA journal_mode = WAL")
+    # If a writer is already in flight (rare; the store-side lock should
+    # prevent it), wait up to 5s instead of erroring immediately.
+    conn.execute("PRAGMA busy_timeout = 5000")
 
     try:
         conn.enable_load_extension(True)

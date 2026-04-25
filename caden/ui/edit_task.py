@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import dateparser
 from datetime import datetime, timezone
 from textual.app import ComposeResult
 from textual.containers import Grid, Vertical
@@ -12,30 +11,7 @@ from textual.widgets import Button, Input, Label, Static
 
 from .services import Services
 from ..errors import CadenError
-from .add_task import rewrite_times_local, _fmt_12h_with_date
-
-
-def _parse_local(text: str) -> datetime | None:
-    """Parse free-form text as system-local wall-clock, return aware datetime.
-
-    See add_task._parse_local_deadline for the rationale: dateparser otherwise
-    treats naive input as UTC and silently shifts the calendar day.
-    """
-    local_tz = datetime.now().astimezone().tzinfo or timezone.utc
-    tz_name = datetime.now(local_tz).tzname() or "UTC"
-    parsed = dateparser.parse(
-        text,
-        settings={
-            "PREFER_DATES_FROM": "future",
-            "RETURN_AS_TIMEZONE_AWARE": True,
-            "TIMEZONE": tz_name,
-        },
-    )
-    if parsed is None:
-        return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=local_tz)
-    return parsed
+from .add_task import rewrite_times_local, _fmt_12h_with_date, _parse_local_deadline as _parse_local
 
 class EditTaskScreen(ModalScreen[bool]):
     BINDINGS = [("escape", "cancel", "Cancel")]
@@ -202,5 +178,5 @@ class EditTaskScreen(ModalScreen[bool]):
                     task=self.g_task_id,
                     body=task
                 ).execute()
-            except Exception:
-                pass
+            except Exception as e:
+                raise CadenError(f"Google Tasks update failed: {e}") from e

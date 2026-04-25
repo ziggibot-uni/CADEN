@@ -74,7 +74,7 @@ def poll_once(
             if not ge_id.startswith("local-only-"):
                 if when < ps_dt:
                     # Early-completion case
-                    dur_min = float(pred["pred_duration_min"] or 60.0)
+                    dur_min = float(pred["pred_duration_min"])
                     shift_start = when - timedelta(minutes=dur_min)
                     calendar_client.reschedule(ge_id, shift_start, when)
                 else:

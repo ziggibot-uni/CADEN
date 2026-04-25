@@ -489,6 +489,9 @@ class AddTaskScreen(ModalScreen[bool]):
                     planned_end_iso=c.end.isoformat(timespec="seconds"),
                 )
             self._set_status("emitting prediction (LLM call)\u2026")
+            self._thinking_buf = ""
+            self._content_buf = ""
+            self.app.call_from_thread(self._show_live)
             emit_prediction(
                 s.conn,
                 task_id=task_id,
@@ -499,6 +502,8 @@ class AddTaskScreen(ModalScreen[bool]):
                 google_event_id=None,
                 llm=s.llm,
                 embedder=s.embedder,
+                on_thinking=self._on_sched_thinking,
+                on_content=self._on_sched_content,
             )
             raise SchedulerError(
                 "task stored locally but Google sync is not configured; "
@@ -544,6 +549,9 @@ class AddTaskScreen(ModalScreen[bool]):
 
         # 8. prediction bundle
         self._set_status("emitting prediction (LLM call)\u2026")
+        self._thinking_buf = ""
+        self._content_buf = ""
+        self.app.call_from_thread(self._show_live)
         emit_prediction(
             s.conn,
             task_id=task_id,
@@ -554,4 +562,6 @@ class AddTaskScreen(ModalScreen[bool]):
             google_event_id=first_event_id,
             llm=s.llm,
             embedder=s.embedder,
+            on_thinking=self._on_sched_thinking,
+            on_content=self._on_sched_content,
         )
