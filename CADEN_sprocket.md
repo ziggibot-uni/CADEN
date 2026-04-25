@@ -214,7 +214,11 @@ running process would corrupt CADEN. Sandbox.
 
 - A separate Python process (subprocess), with a restricted working
   directory (a per-attempt scratch folder), no network access by
-  default, and no access to CADEN's DB.
+  default, and no write access to CADEN's DB or source code.
+- **Safety Gate (Read-Only Source context):** The sandbox mounts CADEN's codebase as 
+  read-only. Sprocket can inspect any part of CADEN's source code so he can correctly wire 
+  things in and register apps, but he cannot accidentally overwrite or destroy CADEN's 
+  core directly.
 - The candidate code is written to a file in the scratch folder along
   with any test inputs derived from the brief.
 - Sprocket runs the file (`python <file>`), captures stdout/stderr/
@@ -364,10 +368,8 @@ process. Integration is a consent event.
   (what tab name, what nav-panel position, what dependencies), the
   templates that produced it, and the residual history.
 - Sean reviews directly in the Sprocket GUI tab (Ask more / Reject / Accept).
-- On accept, the code is written into CADEN's package (some
-  dedicated subdirectory, e.g., `caden/sprocket_apps/`), and a
-  registration event triggers CADEN to load the new tab on next
-  restart.
+- On accept, the code is formally copied to `caden/ui/tabs/` (or similar) and registered 
+  into `app.py`'s TabbedContent layout. CADEN restarts itself recursively to load the new tab.
 - Loaded tabs are inert at first launch — they get a smoke test
   (does the tab render? does it not crash on click?) before becoming
   user-accessible. Smoke test failures roll back the integration and
