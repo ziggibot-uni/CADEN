@@ -1,0 +1,23 @@
+# CADEN runtime data, user config, secrets
+caden.sqlite3
+caden.sqlite3-*
+*.db
+*.db-journal
+google_token.json
+google_credentials.json
+config.json
+.caden/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+build/
+dist/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
