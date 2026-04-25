@@ -10,8 +10,7 @@ CADEN can find them and figure out (through trial-and-error guided by
 residuals) which sources are good and which strategies work.
 
 **Depends on:** `CADEN.md`, `CADEN_index.md`, `CADEN_v0.md`,
-`CADEN_libbie.md`, `CADEN_learning.md`. Some dashboard interactions
-also touch `CADEN_dashboard.md`.
+`CADEN_libbie.md`, `CADEN_learning.md`.
 
 ---
 
@@ -74,7 +73,6 @@ Nothing directly. Sprocket builds on:
 - Libbie's `capture`, `retrieve`, `surface`, `search_web` (SearXNG).
 - The LLM client + repair layer.
 - The schema-growth and residual mechanisms in `CADEN_learning.md`.
-- The dashboard's veto/consent surface for Sean-approval steps.
 - A new sandbox subsystem, planned in this doc.
 
 ---
@@ -90,6 +88,8 @@ A tab in the CADEN GUI, identical layout discipline to other apps:
 - **Main area = chat interface** with Sprocket. Sean describes what he
   wants. Sprocket responds, asks clarifying questions, shows progress,
   surfaces failures.
+- **Model selector dropdown** allowing Sean to explicitly choose which
+  local Ollama model Sprocket uses for a given task.
 - **Status strip** below the chat showing current activity: researching
   / writing / sandboxing / awaiting Sean. Sprocket's loop is visible.
 
@@ -103,10 +103,10 @@ retrieval rule); blending the two streams in the same chat is not.
 
 ## The Two-Stage Flow: Libbie → Sprocket
 
-Per spec interpretation: Libbie does the research and produces a brief;
-Sprocket reads the brief and writes code.
+Per spec interpretation: Libbie does the research and produces a research brief containing templates and advice;
+Sprocket reads the brief, makes a plan, verifies it with Libbie, and writes code.
 
-### Stage 1: Libbie produces a research brief
+### Stage 1: Libbie produces a research brief (Templates + Advice)
 
 Triggered when Sean's request lands in the Sprocket chat.
 
@@ -120,23 +120,26 @@ What Libbie does:
   literal ask).
 - Issues SearXNG searches if the retrieval is thin or if specific
   external knowledge is needed (a library's API, a known pattern).
-  Web results become events as usual (per `CADEN_libbie.md`).
-- Compiles a structured brief: the goal, relevant past code memories
-  (with their residual histories), relevant external sources (with
-  source-quality scores), and any open questions Libbie thinks Sean
-  should resolve before Sprocket starts.
+  Web results become memory events as usual (per `CADEN_libbie.md`).
+- Compiles the retrieved information and known-good examples off the
+  internet into structural templates.
+- Generates strategic advice based on what has historically worked well or failed.
 
-The brief is itself an event. Source = `sprocket_brief`.
+This brief (templates + advice) is surfaced when Sprocket begins to think about how to build
+what Sean requested.
 
-### Stage 2: Sprocket builds
+### Stage 2: Sprocket plans and verifies with Libbie
 
-Sprocket reads the brief and:
+Sprocket reads the research brief and:
 
-- If open questions remain, asks Sean (in chat) before writing code.
+- Forms a plan based on the brief's templates and advice, plus his own ideas.
+- Asks Libbie for verification on his plan.
+- Libbie gives Sprocket advice on his plan, drawing from experiences and the
+  internet memory.
+- If open questions remain, asks Sean (in the Sprocket chat) before writing code.
 - If past code memories closely match, attempts copy-and-tweak first
   (cheaper than from-scratch generation).
-- If no close match, generates from scratch using the brief's external
-  sources.
+- If no close match, generates from scratch using Libbie's advice and templates.
 - Runs each candidate in the sandbox (next section).
 - Iterates until success, until attempt budget exhausted, or until
   Sean halts. Each attempt is an event with a prediction and earns a
@@ -146,11 +149,11 @@ Sprocket reads the brief and:
 
 - Separates "what should we build" (Libbie's research, semantic) from
   "how do we write it" (Sprocket's coding loop, structural).
-- Lets the brief serve as a checkpoint: Sean can review and redirect
-  before code-writing begins.
+- Lets the research brief (templates + advice) serve as a context buffer before
+  code-writing begins.
 - Gives Libbie's source-quality learning a clean place to live (Stage
-  1 picks sources; Stage 2 uses them). Residuals on bad code propagate
-  back to source quality cleanly.
+  1 picks sources; Stage 2 uses them with Libbie's verification). Residuals 
+  on bad code propagate back to source quality cleanly.
 
 ---
 
@@ -305,8 +308,8 @@ This is a schema-growth event per `CADEN_learning.md`.
 - The template is back-tested against the historical cluster (would
   it have produced the past successful code with appropriate
   parameters?) and against held-out recent builds.
-- If back-test passes, the proposal goes through the standard
-  dashboard veto surface (Accept / Reject / Ask more).
+- If back-test passes, the proposal is verified with Libbie and surfaced
+  in the Sprocket chat for Sean's feedback (Accept / Reject / Ask more).
 - On accept, the template enters Sprocket's memory as a high-priority
   retrieval candidate. Future briefs that match the pattern surface
   the template; Sprocket fills slots rather than rebuilding.
@@ -348,7 +351,7 @@ literal "give up after 5" would be a hand-written heuristic.
 
 ---
 
-## Integration Into CADEN
+### Integration Into CADEN
 
 Sprocket builds new tabs. A new tab is code that runs inside CADEN's
 process. Integration is a consent event.
@@ -359,9 +362,8 @@ process. Integration is a consent event.
   CADEN app.
 - Sprocket prepares an integration package: the code, the manifest
   (what tab name, what nav-panel position, what dependencies), the
-  brief that produced it, the residual history.
-- Sean reviews via a dashboard veto-style surface (modal with Accept /
-  Reject / Ask more).
+  templates that produced it, and the residual history.
+- Sean reviews directly in the Sprocket GUI tab (Ask more / Reject / Accept).
 - On accept, the code is written into CADEN's package (some
   dedicated subdirectory, e.g., `caden/sprocket_apps/`), and a
   registration event triggers CADEN to load the new tab on next
@@ -393,11 +395,11 @@ process. Integration is a consent event.
   `approach` (copy_and_tweak vs from_scratch), `code_text`,
   `ast_serialized`, `sandbox_outcome`, `runtime_ms`. Lets Sprocket
   query the recent build history without scanning all events.
-- `source_quality` table: `source_id`, `score`, `last_updated`. The
+- `source` table: `source_id`, `score`, `last_updated`. The
   score is the learned weight; recomputed via the standard learning
   loop.
 - `templates` table: `id`, `name`, `pattern_serialized`, `created_at`,
-  `accepted_at`. Templates the dashboard veto accepted.
+  `accepted_at`. Templates that were surfaced and accepted.
 
 Schema grows from here per learning rules.
 
@@ -411,7 +413,7 @@ Must fail loudly:
   marked failed, loud event).
 - Sandbox process refuses to start (subprocess error, attempt
   aborted, system halts Sprocket loop, Sean is notified).
-- Brief generation fails (Libbie research turns up nothing AND
+- Template generation fails (Libbie research turns up nothing AND
   SearXNG is unreachable). Sprocket asks Sean for more guidance
   rather than guessing.
 - Generated code attempts to import non-Python (e.g., calls out to
@@ -430,7 +432,7 @@ Must fail loudly:
 
 - How does Sprocket handle requests that require persistent state
   (a tab that needs its own DB tables)? Likely answer: schema growth
-  for the new tab's needs, gated through dashboard veto. But this
+  for the new tab's needs, gated through Sprocket GUI veto. But this
   blends Sprocket's integration with the learning system's schema
   growth in a way that may need a dedicated subsection. Punt until
   first such request arises.
