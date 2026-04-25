@@ -257,6 +257,7 @@ class AddTaskScreen(ModalScreen[bool]):
         status = self.query_one("#status", Static)
         desc = self.query_one("#desc", Input).value.strip()
         dl_raw = self.query_one("#deadline", Input).value.strip()
+        prefs = self.query_one("#prefs", TextArea).text
         if not desc:
             status.update("description is required")
             return
@@ -273,7 +274,7 @@ class AddTaskScreen(ModalScreen[bool]):
         self._t0 = time.monotonic()
         self._set_status("submit: starting")
         try:
-            await asyncio.to_thread(self._execute, desc, deadline)
+            await asyncio.to_thread(self._execute, desc, deadline, prefs)
         except CadenError as e:
             self._set_status(f"FAILED: {e}")
             return
