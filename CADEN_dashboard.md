@@ -3,9 +3,8 @@
 **Status:** `draft`
 
 **Purpose:** Plan the Dashboard app beyond what v0 delivers. v0 gives
-three panels (today / chat / 7-day), Google sync rendering, the add-task
-button, and basic completion detection. This doc plans what the
-Dashboard becomes once the learning system is alive.
+the primary Textual `TabPane` (today / chat / 7-day) that acts as the default entry point to CADEN. 
+This doc plans what the Dashboard becomes once the learning system is alive.
 
 **Depends on:** `CADEN.md`, `CADEN_index.md`, `CADEN_v0.md`,
 `CADEN_libbie.md`, `CADEN_learning.md`.
@@ -23,10 +22,8 @@ Dashboard becomes once the learning system is alive.
 
 Dashboard-specific implications:
 
-- **The Dashboard is a view, not a brain.** It surfaces what Libbie,
-  the scheduler, the rater, and the learning system have produced. It
-  does not compute estimates of its own. No dashboard-side logic about
-  Sean.
+- **The Dashboard is a Tab, not a brain.** It is just one app registered within the GUI's `TabbedContent` container. It surfaces what Libbie,
+  the scheduler, the rater, and the learning system have produced.
 - **Every displayed prediction shows its confidence and its residual
   history.** Sean is never shown a number without provenance.
 - **Sean's interactions with the dashboard are memory.** Clicking

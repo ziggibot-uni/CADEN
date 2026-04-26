@@ -63,8 +63,14 @@ Yes, exactly!
   - will be a 7b-10b model, which means that the LLM is only the membrane and reasoning, but it will be relying very heavily on the framework for memory and past lessons learned.
   - model's scope stays small, but many calls can be made. be careful not to fragment too much or you'll lose the plot.
 
+### Core GUI Architecture (Textual Apps)
+- The entire CADEN graphical interface is a unified `TabbedContent` container driven by Textual. 
+- Everything Sean interacts with is an App built as a `TabPane`.
+- The current implementation of CADEN's GUI (`caden/ui/app.py`) is the root container, and the v0 "App" logic acts as the default **Dashboard** tab.
+- All subsequent apps (Sprocket, Thought Dump, Project Manager) will use the exact same tab registration layout. They are all sibling tabs.
+
 ### Dashboard (3 panels) (TBC)
-- Whole dashboard is an app inside CADEN's GUI displayed as a tab that can be selected to view
+- The first/default `TabPane` in CADEN's GUI.
 - To the left, the "today" panel which shows everything that Sean has in his google calendar and google tasks for the day, PLUS whatever CADEN had scheduled him for. All events are displayed in the order they start, and all tasks are displayed in the order of due date/time. Types are all mixed, but labeled. Chronological order is more important.
 - To the right, the same thing but for the next 7 days. CADEN doesn't schedule anything past the current day. His scope stays small.
 - in the middle, the chat interface where Sean can chat with CADEN in a CLI
@@ -79,7 +85,7 @@ Yes, exactly!
   - this means that anything publically available answer should be answerable by CADEN through the chat and is saved for later
 - Libbie keeps track of metadata with each memory so that she can look at when and why something was researched/found
 ### Project Manager App (TBC)
-- The second tab in the CADEN GUI
+- A registered `TabPane` in the CADEN GUI.
 - A place where Sean can keep track of everything that he is working on
 - narrow navigation panel to the left listing each project
 - the rest of the screen shows the project that has been selected
@@ -90,6 +96,7 @@ Yes, exactly!
   - comment
 - after typing entry, pressing enter key submits it, where it is embedded into the db just like every other kind of input in CADEN. now entries influence the LLM's decisions, as this is literally Sean's thought chain ready to be resurfaced when the situation calls for it
 ### Thought Dump App (TBC)
+- A registered `TabPane` in the CADEN GUI.
 - an abyss for Sean to type his thoughts into without shame.
 - all thoughts are embedded into the central vector db, just like all chats from the dashboard
 - a "hide" button that turns all text on the app's screen (not the full CADEN GUI, just the Thought Dump App) into a cypher so that no one can read over Sean's shoulder

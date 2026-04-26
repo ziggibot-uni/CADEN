@@ -79,12 +79,11 @@ Nothing directly. Sprocket builds on:
 
 ## Surface
 
-A tab in the CADEN GUI, identical layout discipline to other apps:
+Sprocket lives as a `TabPane` inside the unified CADEN `TabbedContent` GUI (alongside the Dashboard tab, Project Manager tab, etc.). 
 
-- **Narrow left navigation panel** listing existing apps Sprocket has
-  built (or knows about as built-in), plus an entry for "new app."
-  Selecting an existing app puts Sprocket in edit mode for it.
-  Selecting "new app" puts Sprocket in create mode.
+- **Left navigation panel** listing existing apps Sprocket has
+  built (or knows about as built-in). Creating a new app starts by clicking
+  a "New App" button and granting a name/description.
 - **Main area = chat interface** with Sprocket. Sean describes what he
   wants. Sprocket responds, asks clarifying questions, shows progress,
   surfaces failures.
@@ -214,11 +213,7 @@ running process would corrupt CADEN. Sandbox.
 
 - A separate Python process (subprocess), with a restricted working
   directory (a per-attempt scratch folder), no network access by
-  default, and no write access to CADEN's DB or source code.
-- **Safety Gate (Read-Only Source context):** The sandbox mounts CADEN's codebase as 
-  read-only. Sprocket can inspect any part of CADEN's source code so he can correctly wire 
-  things in and register apps, but he cannot accidentally overwrite or destroy CADEN's 
-  core directly.
+  default, and no access to CADEN's DB.
 - The candidate code is written to a file in the scratch folder along
   with any test inputs derived from the brief.
 - Sprocket runs the file (`python <file>`), captures stdout/stderr/
@@ -356,24 +351,17 @@ literal "give up after 5" would be a hand-written heuristic.
 ---
 
 ### Integration Into CADEN
-
-Sprocket builds new tabs. A new tab is code that runs inside CADEN's
-process. Integration is a consent event.
+Sprocket builds new tabs (`TabPane`s). A new app is code that runs natively inside CADEN's process. Integration begins the moment Sean presses "New App" and provides a name/description.
 
 ### Process
 
-- A successful build in the sandbox is candidate code, not yet a
-  CADEN app.
-- Sprocket prepares an integration package: the code, the manifest
-  (what tab name, what nav-panel position, what dependencies), the
-  templates that produced it, and the residual history.
+- **Full Read Access:** Sprocket has read-only access to the entire `caden/ui` and core codebase. He uses this context to verify how tabs are registered currently (by looking at the Dashboard's implementation) so he can map the integration structurally. 
+- A successful build in the sandbox forms candidate code for a new `TabPane` app.
+- Sprocket prepares an integration package: the code, the manifest, the templates that produced it, and the residual history.
 - Sean reviews directly in the Sprocket GUI tab (Ask more / Reject / Accept).
-- On accept, the code is formally copied to `caden/ui/tabs/` (or similar) and registered 
-  into `app.py`'s TabbedContent layout. CADEN restarts itself recursively to load the new tab.
-- Loaded tabs are inert at first launch — they get a smoke test
-  (does the tab render? does it not crash on click?) before becoming
-  user-accessible. Smoke test failures roll back the integration and
-  log loudly.
+- On accept, the code is written into CADEN's codebase, and Sprocket deterministically modifies the root `caden/ui/app.py` `TabbedContent` block to register the app exactly like the Dashboard. 
+- This replaces LLM hallucination for registration with deterministic, verified GUI placement.
+- Loaded tabs are inert at first launch — they receive a smoke test (does the tab render? does it not crash on context switch?). Smoke test failures roll back the integration.
 
 ### Hard rules
 
