@@ -3,17 +3,18 @@
 **Status:** `locked`
 
 **Audience:** the build agent (a coding LLM building CADEN v0). If that's
-you, **read this file in full before reading anything else**, and then
-read only the files this brief tells you to read.
+you, read `CADEN.md` and `CADEN_v0.md` first. This brief is subordinate to
+those files and exists only as an implementation aid. If this brief
+disagrees with either priority doc, treat this brief as stale.
 
 ---
 
 ## Build Agent Rules (non-negotiable)
 
 1. **You are building v0 only.** Do not implement anything from
-   `CADEN_learning.md`, `CADEN_dashboard.md`, `CADEN_project_manager.md`,
-   `CADEN_thought_dump.md`, `CADEN_sprocket.md`, `CADEN_libbie.md`'s
-   post-v0 sections, or `CADEN_intake.md`. Those are post-v0. Do not
+  `CADEN_learning.md`, `CADEN_dashboard.md`, `CADEN_projectManager.md`,
+  `CADEN_thougtDump.md`, `CADEN_sprocket.md`, `CADEN_libbie.md`'s
+  post-v0 sections. Those are post-v0. Do not
    read them while building v0.
 2. **Do not invent values.** Every parameter, threshold, default, and
    constant in v0 either comes from `CADEN_v0.md`'s Implementation
@@ -26,9 +27,14 @@ read only the files this brief tells you to read.
    then..." No "weekends are different." No "category X means Y." Only
    generic mechanisms over data. If you find yourself writing such a
    rule, halt and ask Sean.
+  Generic operational policies explicitly adopted by the priority docs are
+  allowed. Current examples: the dashboard's 5 AM local day boundary and
+  Libbie's retrieval length penalty that favors concise memories.
 5. **Do not pollute the schema.** v0 schema is fully specified in
-   Implementation Contracts. Do not add fields. Schema growth is a
-   post-v0 mechanism with its own gating.
+  Implementation Contracts. Do not invent extra fields, tags, or
+  heuristics beyond what the priority docs explicitly adopt. Schema
+  growth as a learned mechanism is post-v0, but the current v0 memory
+  split adopted by `CADEN_v0.md` is part of the committed schema.
 6. **No unit-test sprawl.** v0 ships with one end-to-end smoke test
    per milestone, exercising the happy path only. Do not write
    defensive tests for edge cases the design rejects (e.g., do not
@@ -47,11 +53,23 @@ In this exact order. Read each fully before moving on.
 1. `CADEN.md` — the spec. Locked. Do not edit.
 2. `CADEN_v0.md` — the v0 plan and the Implementation Contracts. This
    is your primary reference for the entire build.
-3. This file (`CADEN_build_brief.md`) — file-by-file responsibilities,
+3. This file (`CADEN_buildBrief.md`) — file-by-file responsibilities,
    function signatures, prompt templates, test strategy.
 
 That is all you read while building v0. The other docs exist for
 post-v0 work and will mislead you if you read them now.
+
+## Staleness Note
+
+Some implementation details below were written before later v0 decisions were
+locked. The priority truth is:
+
+- Sean's chat messages are stored as events; CADEN chat replies are not.
+- Raw `events` are provenance; curated `memories` are the CADEN-facing
+  recall layer in the current v0 design.
+- Fixed bootstrap thresholds are not authoritative v0 behavior.
+- If any shopping-list item, prompt, path, or milestone detail conflicts with
+  `CADEN.md` or `CADEN_v0.md`, the priority docs win.
 
 ---
 
@@ -71,8 +89,8 @@ banner before exiting.
 ### `caden/config.py`
 - Reads `~/.config/caden/settings.toml` via `tomllib`.
 - Exposes a `Settings` pydantic model with all fields typed.
-- Defines all `BOOTSTRAP_*` constants listed in Implementation
-  Contracts.
+- Defines only the configuration and constants that remain valid in the
+  priority specs.
 - On first launch, writes a default `settings.toml` if one does not
   exist (this is not a fallback; it's an installer step).
 
@@ -96,8 +114,10 @@ The single async write queue lives here. Public API:
 - `async def capture_event(source: str, raw_text: str, ts_utc: datetime,
   metadata: dict[str, str] | None = None) -> int`
   — writes one row to `events`, computes embedding (synchronously
-  awaits `embed.embed_text`), inserts metadata rows, returns event id.
-  Schedules a `why`-rationale background task.
+  awaits `embed.embed_text`), inserts metadata rows, canonicalizes the
+  captured signal into one or more curated memory rows, returns event id.
+  Schedules a `why`-rationale background task when that mechanism remains
+  part of the current spec.
 - `async def write_rating(event_id: int, mood: float|None,
   energy: float|None, productivity: float|None, conf_mood: float|None,
   conf_energy: float|None, conf_productivity: float|None,
@@ -111,15 +131,18 @@ The single async write queue lives here. Public API:
   serializes them.
 
 ### `caden/libbie/retrieve.py`
-- `async def retrieve(query_text: str, top_k: int = 20,
-  filter_sources: list[str] | None = None,
-  exclude_sources: list[str] | None = None) -> list[Memory]`
-  — embeds the query, runs sqlite-vec KNN, applies optional source
-  filters, returns ranked memories.
-- `class Memory` — pydantic model with `id`, `ts_utc`, `source`,
-  `raw_text`, `metadata: dict[str, str]`, `score: float`.
-- `def truncate_for_prompt(memories: list[Memory], char_budget: int =
-  500) -> list[Memory]` — returns memories with `raw_text` clipped.
+- Libbie retrieval should be described in terms of curated recall units,
+  not raw event dumps. The build agent follows `CADEN_v0.md` for the exact
+  public API and packet shape.
+- The key invariant is: vector search operates over the curated memory layer,
+  and CADEN receives Libbie-packaged recalled-memory context rather than raw
+  event rows.
+- If a retrieval helper still needs provenance details, it may join back to
+  `events`, but that provenance path is subordinate to the curated-memory
+  contract rather than the primary CADEN-facing interface.
+- Use the canonical meanings from `CADEN_v0.md`: `MemoryFrame` is the stored
+  Libbie-side structured memory unit, `RecallPacket` is the CADEN-facing
+  retrieval payload, and `Ligand` is transient Libbie-only steering state.
 
 ### `caden/libbie/why_worker.py`
 Background coroutine that pulls events lacking a `why` metadata row,
@@ -151,7 +174,8 @@ writes the metadata row. Failures log loudly but do not raise.
   self-knowledge memories, builds rater prompt (template below),
   calls LLM with the `RatingResponse` pydantic schema, writes a
   `ratings` row, returns its id. If `event.source` is in the rater's
-  skip-list (intake sources), returns `None` and writes nothing.
+  skip-list for structural/non-experiential events, returns `None` and
+  writes nothing.
 - Triggered by a background coroutine that subscribes to capture
   events.
 
@@ -196,12 +220,13 @@ writes the metadata row. Failures log loudly but do not raise.
   since: datetime) -> list[GoogleTask]`
 
 ### `caden/google_sync/poller.py`
-- Background coroutine that runs every
-  `BOOTSTRAP_COMPLETION_POLL_SECONDS` seconds, finds completed
-  tasks, dispatches `scheduler.residual.on_task_completed`.
+- Background coroutine that polls for completed tasks and dispatches
+  `scheduler.residual.on_task_completed`.
 
 ### `caden/ui/app.py`
-- `class CadenApp(textual.app.App)` — the main app, single tab in v0.
+- `class CadenApp(textual.app.App)` — the main app. In v0 it presents the
+  dashboard surface only; when CADEN expands past v0, this exact surface
+  becomes the `Dashboard` tab inside the larger tabbed GUI.
 
 ### `caden/ui/dashboard.py`
 - Three-panel layout using Textual's `Horizontal` containing three
@@ -406,8 +431,8 @@ plumbing.
 - `tests/test_m5_completion.py` — mark fixture task complete; assert
   event end edited, residuals row exists with duration_residual_min.
 - `tests/test_m6_rater.py` — capture a chat event; assert ratings
-  row created with all six fields; capture an `intake_self_knowledge`
-  event; assert no ratings row created.
+  row created with all six fields; capture a structural event; assert
+  no ratings row created.
 
 Do NOT write more tests than this for v0. Edge cases come later.
 

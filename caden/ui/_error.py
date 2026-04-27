@@ -6,7 +6,13 @@ from textual.widgets import Button, Label, Static
 from textual.containers import Vertical
 
 import structlog
+from .. import diag
 logger = structlog.get_logger()
+
+
+def render_terminal_error_banner(exception: Exception, context: str) -> str:
+    """Render the same error-banner wording for terminal boot failures."""
+    return f"Subsystem Failed: {context}\n{exception}"
 
 class ErrorBanner(ModalScreen[None]):
     """Modal banner that pops up on a CadenError, failing loudly per spec."""
@@ -33,6 +39,7 @@ class ErrorBanner(ModalScreen[None]):
         super().__init__()
         self.exception = exception
         self.err_context = context
+        diag.log("caden_error", f"context={context}\nerror={exception}")
         logger.error("subsystem_failed", context=context, exc_info=exception)
 
     def compose(self) -> ComposeResult:

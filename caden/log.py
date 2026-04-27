@@ -8,15 +8,55 @@ from __future__ import annotations
 import logging
 import sys
 from pathlib import Path
-from typing import Any, MutableMapping
+from typing import Any, Callable, MutableMapping
 
 import structlog
 
-def setup_logging(log_dir: Path, log_level: str = "INFO") -> None:
+
+def make_libbie_event_sink(conn, embedder=None) -> Callable[[MutableMapping[str, Any]], None]:
+    """Build a sink that mirrors log lines into Libbie as `caden_log` events."""
+    from .libbie.store import write_event
+
+    def _sink(event_dict: MutableMapping[str, Any]) -> None:
+        try:
+            raw_text = str(event_dict.get("event") or "")
+            meta = {
+                "priority": "low",
+                **{
+                    key: value
+                    for key, value in event_dict.items()
+                    if key != "event"
+                },
+            }
+            embedding = embedder.embed(raw_text) if (embedder is not None and raw_text) else None
+            write_event(
+                conn,
+                source="caden_log",
+                raw_text=raw_text,
+                embedding=embedding,
+                meta=meta,
+            )
+        except Exception:
+            return
+
+    return _sink
+
+
+def setup_logging(
+    log_dir: Path,
+    log_level: str = "INFO",
+    *,
+    event_sink: Callable[[MutableMapping[str, Any]], None] | None = None,
+):
     log_dir.mkdir(parents=True, exist_ok=True)
     log_file = log_dir / "caden.log"
 
     level = getattr(logging, log_level.upper(), logging.INFO)
+
+    def _emit_sink(_logger, _method_name: str, event_dict: MutableMapping[str, Any]):
+        if event_sink is not None:
+            event_sink(dict(event_dict))
+        return event_dict
 
     shared_processors = [
         structlog.stdlib.add_log_level,
@@ -24,6 +64,7 @@ def setup_logging(log_dir: Path, log_level: str = "INFO") -> None:
         structlog.processors.TimeStamper(fmt="iso", utc=True),
         structlog.processors.StackInfoRenderer(),
         structlog.processors.format_exc_info,
+        _emit_sink,
     ]
 
     structlog.configure(

@@ -13,7 +13,10 @@ The canonical spec remains in `CADEN.md` and is not to be edited here.
 - CADEN must keep learning as Sean changes over time
 - no hand-written heuristics; all behavior is learned. Improve mechanisms, not
   rules. One bespoke rule is pollution; the "just one more rule" trap is fatal.
-- "bootstrapping" or pre-decided limits/thresholds (e.g. max K, truncate chars, max events) are forbidden if they bypass LLM decision-making. The LLM must make the calls using advice/experience, even if it makes bad calls initially, so that a residual is generated to learn from.
+- pre-decided limits/thresholds that bypass LLM decision-making (e.g. fixed
+  max K, truncate chars, max events) are forbidden in v0. CADEN may be thin
+  or wrong during cold start; that is preferable to hard-coded gates that
+  pollute the mechanism.
 - it is acceptable for CADEN to suck for a while during cold start; that is
   cheaper than permanent pollution
 
@@ -109,8 +112,7 @@ immediately paired with a Google Calendar event created by CADEN; that event
 is the scheduling decision.
 
 At the moment CADEN creates the event, he emits a prediction bundle:
-- duration (implicit in event length, and in whether the task was split into
-  multiple chunks across days)
+- duration (implicit in the event length)
 - Sean's mood / energy / productivity just before the event
 - Sean's mood / energy / productivity just after the event
 - a confidence number for each of the above
@@ -142,21 +144,57 @@ remembers anything else.
 - fails loudly: a prediction either matched or didn't; no hidden fallbacks
 - counts on Sean changing: rising residuals are phase-change detection
 
-## Starting Schema (minimum possible)
-Libbie stores one table for all events. Fields that exist because they must:
-- id
-- timestamp
-- source (which app or subsystem produced this event)
-- raw text
-- embedding
+## Starting Memory Model
+Libbie begins with a strict separation between provenance and reasoning:
 
-Nothing else. No primitives, no tags, no affect scores, no situation types,
-no fingerprints, no derived signals. Those are all pollution until CADEN
-discovers he needs them.
+- raw `events` are the immutable capture log
+- curated `memories` are the reasoning units CADEN receives back from Libbie
 
-Estimator outputs (mood / energy / productivity) live alongside events but
-are not event fields. They are computed from events by learned estimators
-and stored separately so the raw event record stays pristine.
+The raw event log exists because CADEN must be able to reconstruct what
+happened. The curated memory layer exists because CADEN should not reason
+directly over an unfiltered transcript dump when Libbie can hand him a more
+useful causal packet.
+
+The minimum semantic split in v0 is therefore:
+
+- `events` hold timestamped source material plus metadata and embeddings for
+  audit, replay, and provenance-oriented retrieval
+- `memories` hold curated recall units derived from events or structured rows
+- CADEN-facing retrieval returns compressed recall packets built from the
+  curated memory layer, not raw event text
+
+Canonical Memory DSL terms in v0:
+
+- **Memory frame**: Libbie's canonical structured memory row. It is the
+  curated unit derived from raw provenance and stored in `memories` with
+  required fields `type`, `domain`, `tags`, `context`, `outcome`,
+  `hooks`, and `embedding_text`.
+- **Recall packet**: the compact CADEN-facing retrieval payload Libbie emits
+  from one or more memory frames for the current task. It is optimized for
+  immediate reasoning by the model, not for archival completeness.
+- **Ligand**: Libbie-internal retrieval steering state for a single retrieval
+  pass. It shapes query formation and ranking, is not persisted as memory,
+  and is not a public CADEN-facing memory object.
+
+Current v0 canonicalization stance:
+
+- v0 commits to a deterministic step from raw provenance into curated memory
+  frames
+- v0 does not freeze the exact temporary string-shaping logic currently used
+  to populate those frames
+- what is fixed is the boundary and the invariants: raw events remain
+  provenance, curated memories remain the reasoning unit, required frame
+  fields stay populated, and `embedding_text` is built from meaning-bearing
+  frame content rather than raw event storage alone
+
+This does NOT license hand-written psychology taxonomies, affect primitives,
+cases, fingerprints, or bespoke derived signals. The memory split is about
+separation of concerns, not about adding designer opinions about Sean.
+
+Estimator outputs (mood / energy / productivity) still live alongside events
+and predictions/residuals as structured rows. Their mirrored event forms stay
+available for provenance; their curated memory forms are what later resurface
+to CADEN when relevant.
 
 ## Schema Growth (learned, not designed)
 Schema growth is a consequence of Predict-Observe-Correct, not a separate rule.
@@ -176,11 +214,27 @@ Rules about schema growth:
   start tracking and why
 
 ## Retrieval (also learned)
-Libbie's retrieval is not a fixed algorithm. It is a scoring function whose
-weights update from residuals: memories whose resurfacing led to good
-predictions gain weight; memories whose resurfacing led to bad predictions
-lose weight. The form of retrieval (embedding similarity + metadata filters)
-is the mechanism; the weights inside it are learned.
+Libbie's retrieval is not a raw nearest-neighbour dump from the event log.
+The current task goes into Libbie; Libbie retrieves curated memories; CADEN
+receives only the resulting recall packet context.
+
+The intended form in v0 is:
+
+- raw events are captured first
+- Libbie canonicalizes them into curated memories
+- vector search runs over the curated memory layer
+- Libbie packages the top recalled memories into compact context for CADEN
+
+Retrieval weights should ultimately move from residuals: memories whose
+resurfacing led to good predictions gain weight; memories whose resurfacing
+led to bad predictions lose weight. v0 is allowed to be thin and imperfect,
+but the separation of raw event log versus CADEN-facing recalled memory is now
+part of the current-scope design rather than a future aspiration.
+
+v0 also keeps one explicit compactness policy inside Libbie retrieval: when
+memories are otherwise similar, longer memories receive a deterministic length
+penalty so concise memories surface first. This is prompt-bloat control for a
+small local model, not a claim about Sean or about which topics matter.
 
 ## Decay / Phase Change
 Old evidence loses weight when residuals involving it start rising. This is
@@ -200,33 +254,53 @@ fallback:
 
 ## v0 Scope
 - dashboard + chat + Libbie memory, as described in CADEN.md
-- every Sean input and every CADEN response gets stored with the minimum schema
-- LLM responds using retrieved context
+- Sean's chat inputs are stored with the minimum schema; CADEN's chat replies
+  stay ephemeral session context and are not persisted as memory in v0
+- Libbie stores raw events as provenance and curated memories as the units of
+  recall surfaced back to CADEN
+- LLM responds using Libbie-packaged retrieved context rather than direct raw
+  event dumps
 - mood / energy / productivity estimators exist from day one but output
   "unknown" until they have enough data to predict. They never fake a number.
 - CADEN owns scheduling. Sean only provides a task and a deadline; CADEN
-  creates the paired Google Calendar event, chooses when it happens, and
-  splits it into chunks if needed. Sean does not schedule anything himself.
+  creates the paired Google Calendar event and chooses when it happens at any
+  time before the due date. Sean does not schedule anything himself.
+- CADEN may move only CADEN-created task blocks when rescheduling. Calendar
+  events not created by CADEN are fixed constraints.
 - every task-event pair spawns a prediction bundle (duration + pre-state +
   post-state + confidences), stored as a memory.
 - on task completion, the paired event's end time is edited to "now",
   freeing the rest of the block. Residuals are computed and stored.
 - no hand-written features, no primitives, no cases, no fingerprints, no
   derived signals.
+- Ligands are Libbie-internal retrieval steering state. They are not memory,
+  not stored as memory, and not a public CADEN-facing object.
 - v0 does not actively compare or optimize between alternative schedules.
   CADEN schedules, predicts, observes, corrects. Optimization is deferred
   until residuals are small enough that predictions are trustworthy.
 - it will feel thin at first. Cold start is the price of purity.
 
+### GUI continuity beyond v0
+The v0 interface is not a disposable prototype. When CADEN expands beyond v0
+into a multi-app GUI, the existing v0 interface becomes the tab named
+`Dashboard` inside the root `TabbedContent` container. In other words:
+
+- v0's today | chat | next-7-days interface is the future Dashboard tab
+- post-v0 GUI growth adds sibling tabs around it
+- expanding the GUI must preserve this continuity rather than replacing v0
+  with a different dashboard concept
+
 ## Scheduling Ownership
 Sean is lazy. CADEN does all the scheduling work.
 - Sean inputs: task description + deadline (via an explicit "add task"
   button/form on the dashboard, not parsed from casual chat)
-- CADEN decides: when it happens, how long it should take, whether to split
-  it across multiple chunks, how it fits around existing calendar/tasks load
-- CADEN writes the resulting Google Task + paired Google Calendar event(s)
+- CADEN decides: when it happens, how long it should take, and how it fits
+  around existing calendar/tasks load before the due date
+- CADEN may move only its own previously created task blocks. It does not
+  move calendar events it did not create.
+- CADEN writes the resulting Google Task + paired Google Calendar event
   via the Google API
-- task and paired event(s) are linked in Libbie so completion of the task
+- task and paired event are linked in Libbie so completion of the task
   can find its event and rewrite its end time
 
 Why a button instead of LLM-parsed chat:
@@ -350,6 +424,11 @@ Tables:
 - `events`: id INTEGER PK, ts_utc TEXT NOT NULL, source TEXT NOT NULL,
   raw_text TEXT NOT NULL, embedding BLOB NOT NULL (sqlite-vec format,
   768 dims for nomic-embed-text)
+- `memories`: id INTEGER PK, event_id INTEGER NULL FK→events, memory_key TEXT
+  NOT NULL UNIQUE, memory_type TEXT NOT NULL, source TEXT NOT NULL,
+  domain TEXT NOT NULL, tags_json TEXT NOT NULL, context TEXT NOT NULL,
+  outcome TEXT NOT NULL, hooks_json TEXT NOT NULL, embedding_text TEXT NOT
+  NULL, created_at TEXT NOT NULL
 - `event_metadata`: id INTEGER PK, event_id INTEGER NOT NULL FK→events,
   key TEXT NOT NULL, value TEXT NOT NULL, created_at TEXT NOT NULL
   (append-only; never UPDATE, never DELETE)
@@ -369,8 +448,8 @@ Tables:
   REAL NULL, post_state_residual_productivity REAL NULL, created_at TEXT
 - `tasks`: id PK, google_task_id TEXT, description TEXT, deadline_utc TEXT,
   status TEXT, created_at TEXT, completed_at_utc TEXT NULL
-- `task_events`: id PK, task_id FK, google_event_id TEXT, chunk_index
-  INTEGER, chunk_count INTEGER
+- `task_events`: id PK, task_id FK, google_event_id TEXT, planned_start
+  TEXT, planned_end TEXT
 
 Each typed-table row also gets an `events` row with `source = "rating"` /
 `"prediction"` / `"residual"` / `"task"` / `"task_event"` so unified
@@ -383,6 +462,13 @@ plus a `vec_events` sqlite-vec virtual table for ANN search. Functionally
 equivalent to a column; the split keeps event-table scans cheap (no BLOB
 bloat) and lets vec_events be rebuilt independently if its index format
 changes.
+
+Curated memory embeddings follow the same separation:
+
+- `memory_embeddings (memory_id FK, embedding BLOB)` stores the vector bytes
+- `vec_memories` is the sqlite-vec virtual table keyed to curated memory rows
+- the memory embedding is derived from `embedding_text`, not from the raw
+  event blob by definition
 
 v0_extras additions (one Alembic revision past initial): `predictions`
 gains a `rationale TEXT` column (the LLM's short explanation for its
@@ -442,13 +528,11 @@ v0 uses. New keys can appear at any time without migration.
   responsive" property without encoding any rule about Sean.
 
 ### LLM context budgeting
-- top-K = 20 retrieved memories per prompt (combined-score ranked)
-- each retrieved memory's raw_text truncated to 500 chars in the prompt
-- total prompt budget configurable; default 6000 tokens
-- if prompt would exceed budget, truncate retrieved memories from the
-  bottom of the rank until it fits. If truncation drops below K=5,
-  raise `LLMError` (loud) — that means context is too rich and we should
-  be smarter about retrieval, not silently drop signal.
+- v0 does not lock in fixed retrieval-count or truncation thresholds as
+  authoritative behavior.
+- prompt packaging should stay honest about what context was included,
+  fail loudly when the framework cannot build a usable prompt, and avoid
+  silent signal-dropping disguised as a safety cap.
 
 ### Statistical methods (libraries and which to use where)
 - residual aggregation and rolling stats: pandas
@@ -499,10 +583,19 @@ When a task arrives and there is no relevant history:
 - if the LLM genuinely cannot estimate a state axis, it returns null
   for that axis and null confidence; the framework writes the nulls
   through verbatim. NULL means unknown.
-- no chunking in v0 first-schedules. Chunking unlocks once duration
-  predictions earn higher confidence.
+- the scheduler may place the block anywhere before the deadline.
+- rescheduling may move existing CADEN-created task blocks, but never
+  non-CADEN calendar events.
 - no working-hours constraint imposed by CADEN. Working-time preferences
   are something CADEN learns from residuals over time, not a setting.
+
+### Dashboard time boundary
+- the dashboard's "today" window is anchored to a 5 AM local-time day
+  boundary rather than midnight.
+- v0 therefore treats "today" as 5 AM local -> next 5 AM local, and the
+  7-day panel is anchored from that same boundary.
+- rationale: this is a generic circadian presentation policy, not a hand-
+  written claim about Sean's specific habits.
 
 ### Task completion handling (edge cases)
 On completion at time `T`:
@@ -524,7 +617,8 @@ On completion at time `T`:
 - poll Google Tasks every 60 seconds while CADEN is running
 - detect `status == 'completed'` transitions vs the last-seen state
   cached in `tasks` table
-- 60-second cadence is a bootstrap value (see below); learned-tunable
+- the polling cadence is an implementation detail, not a user-truth about
+  Sean and not an authoritative v0 learning rule
 
 ### Google integration scope
 - on first OAuth, CADEN enumerates available calendars and tasks lists
@@ -559,25 +653,24 @@ On completion at time `T`:
   "live world" context (today's calendar, open tasks). Single place
   so the chat widget, add-task scheduler, and rater don't each
   reinvent context shape.
-- this is mechanism, not policy: curate decides nothing about what
-  matters; it just composes what retrieval and the live-world readers
-  return.
+- this is mechanism, not policy: curate packages what Libbie retrieval and
+  the live-world readers return; CADEN should not see raw retrieval internals
+  beyond the compact recalled-memory context Libbie decides to surface.
+
+### CADEN-facing recall contract
+- CADEN-facing retrieval is over curated `memories`, not raw `events`.
+- raw `events` remain available for provenance, replay, and audit.
+- Libbie may consult event provenance while packaging context, but the object
+  handed to CADEN is a compact recalled-memory packet, not a raw event dump.
+- ligands remain Libbie-internal retrieval steering state and are not part of
+  the public CADEN-facing memory object.
 
 ### PM and chat
 - dashboard chat events have `project_id = NULL` always
-- Libbie's retrieval for the dashboard chat reads across all events
-  including PM-tagged ones, so cross-pollination still works
+- dashboard chat retrieval reads across Libbie's memory layer, including
+  memories derived from PM-tagged events, so cross-pollination still works
 - PM gets its own conversational surface in a future doc; until then,
   the dashboard chat is the only chat surface
-
-### Intake and the rater
-- intake events (`source IN ('intake_self_knowledge',
-  'intake_code_pattern')`) are NOT rated by the rater
-- the rater filters out intake sources before processing
-- intake events still participate in retrieval normally
-- this is the one event-class exception to "everything gets rated";
-  rationale: intake is meta-content about Sean, not events Sean
-  experienced
 
 ### Default LLM model
 - configured in `~/.config/caden/settings.toml` as `llm.model`
@@ -588,44 +681,15 @@ On completion at time `T`:
 
 ### Sprocket sandbox
 - `firejail --net=none --private=<scratch_folder> --quiet python <script>`
-- timeout: bootstrap 30s, learned-tunable
+- timeout policy is deferred; this doc does not lock a bootstrap value here
 - network can be enabled per-attempt only when the brief explicitly
   requires it AND Sean acknowledges; default is no-network
 
-### Bootstrap values (the rules-vs-gates distinction)
-Some numbers must exist before learning kicks in. To stay clear of
-"hand-written heuristics," CADEN treats them as gates, not rules:
-- all bootstrap values live in `caden/config.py` with `BOOTSTRAP_*`
-  prefix and a comment explaining the gate they unlock
-- on first use, each bootstrap value is logged as an event with source
-  `bootstrap_value_used` and metadata describing it
-- the learning system is required to override each bootstrap value
-  within a defined number of relevant events (also a bootstrap value;
-  it's bootstraps all the way down, but the chain is finite)
-- Sean can see the current value of every bootstrap on the dashboard's
-  audit surface (post-v0)
-
-Concrete bootstrap values used in v0:
-- `BOOTSTRAP_COMPLETION_POLL_SECONDS = 60`
-- `BOOTSTRAP_PROMPT_TOKEN_BUDGET = 6000`
-- `BOOTSTRAP_RETRIEVAL_TOP_K = 20`
-- `BOOTSTRAP_RETRIEVAL_TRUNCATE_CHARS = 500`
-- `BOOTSTRAP_RETRIEVAL_MIN_K = 5` (the floor below which prompt-budget
-  truncation raises `LLMError` instead of silently dropping signal)
-- `BOOTSTRAP_FOCAL_TEXT_TRUNCATE_CHARS = 2000` (cap on the focal event
-  body itself when fed to the rater / chat prompt; complements the
-  per-retrieved-memory truncate)
-- `BOOTSTRAP_SCHEDULER_MAX_CALENDAR_EVENTS = 40` (cap on calendar items
-  passed to the scheduler LLM when picking a block)
-- `BOOTSTRAP_SCHEDULER_EVENT_SUMMARY_CHARS = 80` (per-calendar-event
-  summary truncate at the same surface)
-- `BOOTSTRAP_SANDBOX_TIMEOUT_SECONDS = 30` (Sprocket; not v0)
-- `BOOTSTRAP_REFIT_MIN_RESIDUALS = 50` (learning system; not v0)
-- `BOOTSTRAP_TEMPLATE_CLUSTER_MIN = 5` (Sprocket; not v0)
-
-If any bootstrap value feels like it's about Sean specifically rather
-than about "data must exist before math can run," it's actually a
-heuristic and must be removed. Audit on every release.
+### Rejected Bootstrap Draft (history only)
+Earlier drafts in this file proposed fixed `BOOTSTRAP_*` values for prompt
+budgeting, retrieval caps, scheduler caps, poll cadence, and sandbox timeouts.
+Sean rejected that direction. Those fixed thresholds are not authoritative v0
+behavior and should not be treated as part of the current spec.
 
 ## Open Questions (still honest, not pre-decided)
 - what does "balance all three" mean mathematically once CADEN is ready
@@ -671,7 +735,7 @@ caden/
 
   scheduler/
     __init__.py
-    schedule.py          # pick when a task runs; split into chunks
+    schedule.py          # pick when a task runs
     predict.py           # emit prediction bundle at scheduling time
     residual.py          # compute + store residuals on task completion
 
@@ -731,7 +795,7 @@ Single DB, multiple tables, all keyed by integer id + timestamp.
   later), created_at
 - tasks: id, google_task_id, description, deadline, status, created_at,
   completed_at
-- task_events: id, task_id, google_event_id, chunk_index, chunk_count
+- task_events: id, task_id, google_event_id, planned_start, planned_end
 
 Ratings, predictions, and residuals are all also stored as events (with the
 right source tag) so Libbie can retrieve them through the same search as
@@ -744,17 +808,18 @@ Milestones are ordered. Each one is independently runnable.
 Milestone 1 — Skeleton that stores.
 - Textual app with one tab (dashboard), three panels
 - middle panel is a chat widget; Sean types, CADEN echoes
-- every message from Sean and every response from CADEN is written to events
-  with embedding
+- Sean's chat messages are written to events with embeddings; CADEN replies
+  are displayed in-session only and are not stored as events
 - today and 7-day panels show placeholder text
 - sqlite-vec verified working with nomic-embed-text vectors
 
 Milestone 2 — LLM round trip.
 - CADEN responds with an actual ollama call
 - repair layer in place; caller gets clean JSON or a loud error
-- response is stored in events like any other message
-- simple retrieval: last N related events by embedding similarity, fed into
-  the prompt
+- CADEN's reply is used as live in-session context only, not persisted as an
+  event
+- Libbie packages chat context from curated memory recall rather than dumping
+  raw related event text straight into the prompt
 
 Milestone 3 — Google sync read-only.
 - OAuth flow works
@@ -789,7 +854,8 @@ After Milestone 6, v0 is complete.
 - active schedule comparison or optimization
 - schema growth mechanism
 - phase-change detection
-- SearXNG web research
+- general-purpose web research as a first-class user feature outside Libbie's
+  tightly-scoped enrichment path
 - cross-device sync
 
 ### Minimum residual-tracking machinery for day one

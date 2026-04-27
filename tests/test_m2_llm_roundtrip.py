@@ -37,12 +37,8 @@ async def test_m2_llm_roundtrip(tmp_caden_home, db_conn, httpx_mock, monkeypatch
         text=stream_response
     )
 
-    # Insert 5 events to satisfy BOOTSTRAP_RETRIEVAL_MIN_K
-    write_event(db_conn, "intake_self_knowledge", "Sean likes tests 1", [0.1]*768)
-    write_event(db_conn, "intake_self_knowledge", "Sean likes tests 2", [0.1]*768)
-    write_event(db_conn, "intake_self_knowledge", "Sean likes tests 3", [0.1]*768)
-    write_event(db_conn, "intake_self_knowledge", "Sean likes tests 4", [0.1]*768)
-    write_event(db_conn, "intake_self_knowledge", "Sean likes tests 5", [0.1]*768)
+    # v0 should not require a fixed retrieval floor just to rate one event.
+    write_event(db_conn, "sean_chat", "Sean likes tests", [0.1]*768)
     
     # Insert the event to be rated
     event_id = write_event(db_conn, "sean_chat", "This is a test event", [0.1]*768)
@@ -61,6 +57,11 @@ async def test_m2_llm_roundtrip(tmp_caden_home, db_conn, httpx_mock, monkeypatch
     user_msg = next((m["content"] for m in messages if m["role"] == "user"), "")
     
     assert "Sean likes tests" in user_msg, "Retrieval was not fed into the prompt"
+
+    bootstrap_row = db_conn.cursor().execute(
+        "SELECT COUNT(*) AS n FROM events WHERE source='bootstrap_value_used'"
+    ).fetchone()
+    assert bootstrap_row["n"] == 0, "Rater should not emit bootstrap_value_used events"
     
     # Assert repair layer worked cleanly and saved valid data
     cur = db_conn.cursor()

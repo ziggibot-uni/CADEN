@@ -24,6 +24,44 @@ SCOPES = [
 ]
 
 
+def list_available_calendars(credentials) -> list[tuple[str, str]]:
+    """Return [(calendar_id, summary)] available to these credentials."""
+    try:
+        from googleapiclient.discovery import build
+
+        service = build("calendar", "v3", credentials=credentials, cache_discovery=False)
+        resp = service.calendarList().list().execute()
+    except Exception as e:
+        raise GoogleSyncError(f"failed to enumerate Google calendars: {e}") from e
+    out: list[tuple[str, str]] = []
+    for item in resp.get("items", []):
+        cid = item.get("id")
+        if not isinstance(cid, str) or not cid:
+            continue
+        summary = item.get("summary") if isinstance(item.get("summary"), str) else cid
+        out.append((cid, summary))
+    return out
+
+
+def list_available_task_lists(credentials) -> list[tuple[str, str]]:
+    """Return [(task_list_id, title)] available to these credentials."""
+    try:
+        from googleapiclient.discovery import build
+
+        service = build("tasks", "v1", credentials=credentials, cache_discovery=False)
+        resp = service.tasklists().list(maxResults=100).execute()
+    except Exception as e:
+        raise GoogleSyncError(f"failed to enumerate Google task lists: {e}") from e
+    out: list[tuple[str, str]] = []
+    for item in resp.get("items", []):
+        tid = item.get("id")
+        if not isinstance(tid, str) or not tid:
+            continue
+        title = item.get("title") if isinstance(item.get("title"), str) else tid
+        out.append((tid, title))
+    return out
+
+
 def load_credentials(credentials_path: Path, token_path: Path) -> Credentials:
     """Return valid Credentials, running the interactive flow if needed."""
     if not credentials_path.is_file():

@@ -134,6 +134,13 @@ def apply_schema(conn: sqlite3.Connection, embed_dim: int) -> None:
             );
             """
         )
+        cur.execute(
+            f"""
+            CREATE VIRTUAL TABLE IF NOT EXISTS vec_memories USING vec0(
+                embedding float[{embed_dim}]
+            );
+            """
+        )
     except Exception as e:
         raise DBError(f"failed to apply schema migrations: {e}") from e
 

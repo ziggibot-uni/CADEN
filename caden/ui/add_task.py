@@ -6,14 +6,14 @@ enforces both fields; a bypass is a bug. Submitting:
   1. writes the Task row (+ mirrored event) in Libbie
   2. creates a Google Task (if Google sync is available)
   3. asks the scheduler for a plan
-  4. creates a Google Calendar event per chunk (if Google sync is available)
+    4. creates one Google Calendar event for the scheduled block (if Google sync is available)
   5. links task_events
   6. emits a prediction bundle
 
-When Google sync is not configured, steps 2 and 4 degrade to storing the plan
-locally only — but loudly, with a visible note. This is the single pragmatic
-softening in v0: boot doesn't require Google to be live just to run chat.
-The moment Google is configured, tasks flow end to end.
+Add-task itself is not soft-enabled in chat-only boot. The v0 spec allows
+missing Google credentials only so chat can run before Google is wired up;
+the add-task surface remains unusable until both Google Tasks and Calendar
+write targets are configured.
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Label, Static, TextArea
 
 from ..errors import CadenError, SchedulerError
-from ..libbie.store import link_task_event, write_task
+from ..libbie.store import link_task_event, update_task_event_plan, write_task
 from ..scheduler.predict import emit_prediction
 from ..scheduler.schedule import ExistingEvent, plan
 from .services import Services
@@ -393,22 +393,25 @@ class AddTaskScreen(ModalScreen[bool]):
             s.calendar.reschedule(  # type: ignore[attr-defined]
                 d.google_event_id, d.new_start, d.new_end
             )
-            s.conn.execute(
-                """
-                UPDATE task_events
-                SET planned_start=?, planned_end=?
-                WHERE google_event_id=?
-                """,
-                (
-                    d.new_start.astimezone(timezone.utc).isoformat(timespec="seconds"),
-                    d.new_end.astimezone(timezone.utc).isoformat(timespec="seconds"),
-                    d.google_event_id,
-                ),
+            update_task_event_plan(
+                s.conn,
+                google_event_id=d.google_event_id,
+                planned_start_iso=d.new_start.astimezone(timezone.utc).isoformat(timespec="seconds"),
+                planned_end_iso=d.new_end.astimezone(timezone.utc).isoformat(timespec="seconds"),
             )
 
     def _execute(self, desc: str, deadline: datetime, preferences: str = "") -> None:
         s = self.services
         now = datetime.now(timezone.utc)
+
+        if s.tasks is None or s.calendar is None:
+            raise SchedulerError(
+                "add-task requires configured Google Tasks and Calendar write clients"
+            )
+        if hasattr(s.tasks, "writable_task_list_id") and not getattr(s.tasks, "writable_task_list_id"):
+            raise SchedulerError("add-task requires a configured default writable Google task list")
+        if hasattr(s.calendar, "writable_calendar_id") and not getattr(s.calendar, "writable_calendar_id"):
+            raise SchedulerError("add-task requires a configured default writable Google calendar")
 
         # 1. gather calendar context so the LLM can place the task well
         self._set_status("reading calendar\u2026")
@@ -445,12 +448,11 @@ class AddTaskScreen(ModalScreen[bool]):
             f"plan received: {sched.total_minutes}min, "
             f"{len(sched.displacements)} displacement(s)"
         )
+        block = sched.block
 
         # 4. Google Task (the deadline-side handle)
         local_tz = datetime.now().astimezone().tzinfo or timezone.utc
-        scheduled_summary = ", ".join(
-            _format_block_line(c.start, c.end, local_tz) for c in sched.chunks
-        )
+        scheduled_summary = _format_block_line(block.start, block.end, local_tz)
         deadline_local = _fmt_12h_with_date(
             deadline.astimezone(local_tz), datetime.now(local_tz)
         )
@@ -463,11 +465,9 @@ class AddTaskScreen(ModalScreen[bool]):
         )
         if prefs_block:
             task_notes += f"\n\npreferences:\n{prefs_block}"
-        g_task_id: str | None = None
-        if s.tasks is not None:
-            self._set_status("creating Google task\u2026")
-            gt = s.tasks.create(title=desc, due=deadline, notes=task_notes)  # type: ignore[attr-defined]
-            g_task_id = gt.id
+        self._set_status("creating Google task\u2026")
+        gt = s.tasks.create(title=desc, due=deadline, notes=task_notes)  # type: ignore[attr-defined]
+        g_task_id: str | None = gt.id
         self._set_status("writing task to Libbie\u2026")
         task_id = write_task(
             s.conn,
@@ -477,40 +477,6 @@ class AddTaskScreen(ModalScreen[bool]):
             embedding=desc_emb,
         )
 
-        # 5. if google calendar is not configured, degrade loudly
-        if s.calendar is None:
-            for c in sched.chunks:
-                link_task_event(
-                    s.conn,
-                    task_id=task_id,
-                    google_event_id=f"local-only-{task_id}-{c.index}",
-                    chunk_index=c.index,
-                    chunk_count=c.count,
-                    planned_start_iso=c.start.isoformat(timespec="seconds"),
-                    planned_end_iso=c.end.isoformat(timespec="seconds"),
-                )
-            self._set_status("emitting prediction (LLM call)\u2026")
-            self._thinking_buf = ""
-            self._content_buf = ""
-            self.app.call_from_thread(self._show_live)
-            emit_prediction(
-                s.conn,
-                task_id=task_id,
-                description=desc,
-                description_embedding=desc_emb,
-                planned_start_iso=sched.chunks[0].start.isoformat(timespec="seconds"),
-                planned_end_iso=sched.chunks[-1].end.isoformat(timespec="seconds"),
-                google_event_id=None,
-                llm=s.llm,
-                embedder=s.embedder,
-                on_thinking=self._on_sched_thinking,
-                on_content=self._on_sched_content,
-            )
-            raise SchedulerError(
-                "task stored locally but Google sync is not configured; "
-                "calendar event NOT created. configure google_credentials_path to enable."
-            )
-
         # 6. apply displacements first so the new block lands in clean space
         if sched.displacements:
             self._set_status(
@@ -518,35 +484,28 @@ class AddTaskScreen(ModalScreen[bool]):
             )
             self._apply_displacements(task_id, sched.displacements)
 
-        # 7. create the calendar event(s) for this task
-        first_event_id: str | None = None
-        n = len(sched.chunks)
-        for c in sched.chunks:
-            self._set_status(f"creating calendar event {c.index + 1}/{n}\u2026")
-            title = desc if c.count == 1 else f"{desc} ({c.index + 1}/{c.count})"
-            ce = s.calendar.create_event(  # type: ignore[attr-defined]
-                summary=title,
-                start=c.start,
-                end=c.end,
-                description=(
-                    f"CADEN task #{task_id}\n"
-                    f"deadline: {deadline_local}\n"
-                    f"block: {_format_block_line(c.start, c.end, local_tz)}\n\n"
-                    + (f"preferences:\n{prefs_block}\n\n" if prefs_block else "")
-                    + rationale_clean
-                ),
-            )
-            if first_event_id is None:
-                first_event_id = ce.id
-            link_task_event(
-                s.conn,
-                task_id=task_id,
-                google_event_id=ce.id,
-                chunk_index=c.index,
-                chunk_count=c.count,
-                planned_start_iso=c.start.isoformat(timespec="seconds"),
-                planned_end_iso=c.end.isoformat(timespec="seconds"),
-            )
+        # 7. create the calendar event for this task
+        self._set_status("creating calendar event…")
+        ce = s.calendar.create_event(  # type: ignore[attr-defined]
+            summary=desc,
+            start=block.start,
+            end=block.end,
+            description=(
+                f"CADEN task #{task_id}\n"
+                f"deadline: {deadline_local}\n"
+                f"block: {_format_block_line(block.start, block.end, local_tz)}\n\n"
+                + (f"preferences:\n{prefs_block}\n\n" if prefs_block else "")
+                + rationale_clean
+            ),
+        )
+        first_event_id: str | None = ce.id
+        link_task_event(
+            s.conn,
+            task_id=task_id,
+            google_event_id=ce.id,
+            planned_start_iso=block.start.astimezone(timezone.utc).isoformat(timespec="seconds"),
+            planned_end_iso=block.end.astimezone(timezone.utc).isoformat(timespec="seconds"),
+        )
 
         # 8. prediction bundle
         self._set_status("emitting prediction (LLM call)\u2026")
@@ -558,8 +517,8 @@ class AddTaskScreen(ModalScreen[bool]):
             task_id=task_id,
             description=desc,
             description_embedding=desc_emb,
-            planned_start_iso=sched.chunks[0].start.isoformat(timespec="seconds"),
-            planned_end_iso=sched.chunks[-1].end.isoformat(timespec="seconds"),
+            planned_start_iso=block.start.astimezone(timezone.utc).isoformat(timespec="seconds"),
+            planned_end_iso=block.end.astimezone(timezone.utc).isoformat(timespec="seconds"),
             google_event_id=first_event_id,
             llm=s.llm,
             embedder=s.embedder,

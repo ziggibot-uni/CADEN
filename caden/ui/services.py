@@ -10,6 +10,7 @@ import sqlite3
 from dataclasses import dataclass
 
 from ..config import Config
+from ..libbie.store import close_write_queue
 from ..llm.client import OllamaClient
 from ..llm.embed import Embedder
 
@@ -20,15 +21,21 @@ class Services:
     conn: sqlite3.Connection
     llm: OllamaClient
     embedder: Embedder
+    searxng: object | None = None
     # Google pieces are optional at v0 — main.py sets them when sync is live.
     calendar: object | None = None   # CalendarClient
     tasks: object | None = None      # TasksClient
 
     def close(self) -> None:
         try:
-            self.llm.close()
+            if self.searxng is not None:
+                self.searxng.close()
         finally:
             try:
-                self.embedder.close()
+                self.llm.close()
             finally:
-                self.conn.close()
+                try:
+                    self.embedder.close()
+                finally:
+                    close_write_queue(self.conn)
+                    self.conn.close()

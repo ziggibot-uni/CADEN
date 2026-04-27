@@ -1,28 +1,34 @@
-from datetime import datetime
-from caden.ui.add_task import rewrite_times_local, _format_block_line
+import asyncio
 
-local_tz = datetime.now().astimezone().tzinfo
+async def main():
+    from caden.main import _boot
+    from caden.ui.app import CadenApp
+    from caden.ui.dashboard import SidePanel
+    from caden.ui.chat import ChatWidget
+    from textual.widgets import Button, Static
 
-samples = [
-    "I will start at 21:00 and end at 22:30.",
-    "Block runs 2026-04-25 21:00 → 2026-04-25 22:30.",
-    "ISO with offset: 2026-04-26T01:00:00Z is the boundary.",
-    "Already pretty: 9 PM works for me, also 9:30pm and 12 a.m.",
-    "Edge case 00:00 should be left alone.",
-    "Mixed: 2026-04-25T21:00:00-04:00 and bare 7:15 inside one line.",
-]
-for s in samples:
-    print(f"IN : {s}")
-    print(f"OUT: {rewrite_times_local(s, local_tz)}")
-    print()
+    services = _boot()
+    app = CadenApp(services)
 
-# Block formatting
-start = datetime(2026, 4, 25, 21, 0, tzinfo=local_tz)
-end = datetime(2026, 4, 25, 22, 30, tzinfo=local_tz)
-print(f"BLOCK today: {_format_block_line(start, end, local_tz)}")
-start2 = datetime(2026, 4, 26, 9, 0, tzinfo=local_tz)
-end2 = datetime(2026, 4, 26, 10, 0, tzinfo=local_tz)
-print(f"BLOCK tomorrow: {_format_block_line(start2, end2, local_tz)}")
-start3 = datetime(2026, 5, 3, 14, 0, tzinfo=local_tz)
-end3 = datetime(2026, 5, 3, 15, 0, tzinfo=local_tz)
-print(f"BLOCK other: {_format_block_line(start3, end3, local_tz)}")
+    # Run a quick render probe for manual debugging.
+    async with app.run_test(size=(120, 40)):
+        # Wait briefly for initialization/rendering
+        await asyncio.sleep(2)
+
+        clock = app.query_one("#app-clock", Static).render().plain
+        add_task_btn = app.query_one("#add-task", Button).label.plain
+        panels = list(app.query(SidePanel))
+        today_title = panels[0].query_one("#title", Static).render().plain
+        next_7_title = panels[1].query_one("#title", Static).render().plain
+        chat_header = app.query_one(ChatWidget).query_one("#chat-header", Static).render().plain
+
+        print(f"CLOCK: {clock}")
+        print(f"ADD_TASK: {add_task_btn}")
+        print(f"TODAY: {today_title}")
+        print(f"NEXT_7: {next_7_title}")
+        print(f"CHAT_HEADER: {chat_header}")
+
+    services.close()
+
+if __name__ == "__main__":
+    asyncio.run(main())

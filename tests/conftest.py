@@ -1,8 +1,5 @@
 import os
-import json
-import sqlite3
 import pytest
-from pathlib import Path
 
 from caden.config import Config, load
 from caden.libbie.db import connect, apply_schema
@@ -11,24 +8,36 @@ from caden.llm.embed import Embedder
 from caden.ui.services import Services
 
 @pytest.fixture
-def tmp_caden_home(tmp_path):
-    os.environ["CADEN_HOME"] = str(tmp_path)
-    cfg_file = tmp_path / "config.json"
-    cfg_file.write_text(json.dumps({
-        "ollama_url": "http://127.0.0.1:11434",
-        "ollama_model": "llama3.1:8b",
-        "embed_model": "nomic-embed-text",
-        "embed_dim": 768,
-        "google_credentials_path": str(tmp_path / "google_credentials.json"),
-        "google_token_path": str(tmp_path / "google_token.json")
-    }))
+def tmp_caden_home(tmp_path, monkeypatch):
+    monkeypatch.delenv("CADEN_HOME", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    config_dir = tmp_path / ".config" / "caden"
+    data_dir = tmp_path / ".local" / "share" / "caden"
+    config_dir.mkdir(parents=True)
+    data_dir.mkdir(parents=True)
+
+    cfg_file = config_dir / "settings.toml"
+    cfg_file.write_text(
+        """
+ollama_url = "http://127.0.0.1:11434"
+embed_model = "nomic-embed-text"
+embed_dim = 768
+google_credentials_path = "~/.config/caden/google_credentials.json"
+google_token_path = "~/.config/caden/google_token.json"
+
+[llm]
+model = "llama3.1:8b"
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
     yield tmp_path
-    if "CADEN_HOME" in os.environ:
-        del os.environ["CADEN_HOME"]
 
 @pytest.fixture
 def db_conn(tmp_caden_home):
-    db_path = tmp_caden_home / "caden.sqlite3"
+    db_path = load().db_path
     conn = connect(db_path)
     apply_schema(conn, embed_dim=768)
     yield conn

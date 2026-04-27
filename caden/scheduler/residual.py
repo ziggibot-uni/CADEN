@@ -15,7 +15,9 @@ from __future__ import annotations
 import sqlite3
 from datetime import datetime
 
-from ..config import BOOTSTRAP_STATE_RESIDUAL_WINDOW_MIN, log_bootstrap_use
+import pandas as pd
+
+from ..config import STATE_RESIDUAL_WINDOW_MIN
 from ..errors import SchedulerError
 from ..libbie.store import write_residual
 
@@ -47,6 +49,59 @@ def _sub(observed: float | None, predicted: float | None) -> float | None:
     return float(observed) - float(predicted)
 
 
+def aggregate_residuals_by_mechanism(conn: sqlite3.Connection) -> pd.DataFrame:
+    """Return a pandas aggregate of residual strength by mechanism."""
+    frame = pd.read_sql_query(
+        """
+        SELECT
+            duration_residual_min,
+            pre_state_residual_mood,
+            pre_state_residual_energy,
+            pre_state_residual_productivity,
+            post_state_residual_mood,
+            post_state_residual_energy,
+            post_state_residual_productivity
+        FROM residuals
+        """,
+        conn,
+    )
+    if frame.empty:
+        return pd.DataFrame(
+            columns=["mechanism", "sample_count", "mean_residual", "mean_abs_residual"]
+        )
+
+    renamed = frame.rename(
+        columns={
+            "duration_residual_min": "duration",
+            "pre_state_residual_mood": "pre_mood",
+            "pre_state_residual_energy": "pre_energy",
+            "pre_state_residual_productivity": "pre_productivity",
+            "post_state_residual_mood": "post_mood",
+            "post_state_residual_energy": "post_energy",
+            "post_state_residual_productivity": "post_productivity",
+        }
+    )
+    long_frame = renamed.melt(var_name="mechanism", value_name="residual").dropna(
+        subset=["residual"]
+    )
+    if long_frame.empty:
+        return pd.DataFrame(
+            columns=["mechanism", "sample_count", "mean_residual", "mean_abs_residual"]
+        )
+
+    summary = (
+        long_frame.groupby("mechanism", as_index=False)["residual"]
+        .agg(
+            sample_count="count",
+            mean_residual="mean",
+            mean_abs_residual=lambda values: values.abs().mean(),
+        )
+        .sort_values(["mean_abs_residual", "mechanism"], ascending=[False, True], kind="stable")
+        .reset_index(drop=True)
+    )
+    return summary
+
+
 def compute_and_store(
     conn: sqlite3.Connection,
     prediction_id: int,
@@ -72,15 +127,14 @@ def compute_and_store(
     except ValueError as e:
         raise SchedulerError(f"bad iso timestamps for residual: {e}") from e
 
-    actual_minutes = max(0.0, (end - start).total_seconds() / 60.0)
-    duration_residual = actual_minutes - float(pred["pred_duration_min"])
+    if end < start:
+        actual_minutes = None
+        duration_residual = None
+    else:
+        actual_minutes = max(0.0, (end - start).total_seconds() / 60.0)
+        duration_residual = actual_minutes - float(pred["pred_duration_min"])
 
-    log_bootstrap_use(
-        conn,
-        "BOOTSTRAP_STATE_RESIDUAL_WINDOW_MIN",
-        BOOTSTRAP_STATE_RESIDUAL_WINDOW_MIN,
-    )
-    window = BOOTSTRAP_STATE_RESIDUAL_WINDOW_MIN
+    window = STATE_RESIDUAL_WINDOW_MIN
     observed_pre = _nearest_rating(conn, planned_start_iso, window)
     observed_post = _nearest_rating(conn, actual_end_iso, window)
 

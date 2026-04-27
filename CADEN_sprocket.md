@@ -329,11 +329,10 @@ literal "give up after 5" would be a hand-written heuristic.
 
 ### Mechanism
 
-- Bootstrap value: small (e.g., 3 attempts) so Sprocket doesn't burn
-  unbounded time before any data exists.
-- After each request, the system observes: did attempts beyond the
-  bootstrap value ever succeed where earlier attempts failed? If yes,
-  budget grows. If no, budget shrinks.
+- Sprocket should not lock in a fixed bootstrap attempt budget here.
+- After each request, the system observes: did later attempts ever
+  succeed where earlier attempts failed? If yes, budget grows. If no,
+  budget shrinks.
 - The budget can vary by request type — copy-and-tweak vs. from-
   scratch may have different optimal budgets, learned separately.
 - Sean can always halt earlier than the budget. A halt is a

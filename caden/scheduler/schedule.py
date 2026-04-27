@@ -9,10 +9,8 @@ Per spec ("Concrete v0 first-time scheduling rule"):
     displace CADEN-owned task blocks to make room, returns a list of moves
     for those blocks
   - external (non-CADEN) events are NEVER moved
-  - no hand-written heuristics about timing (no top-of-hour rounding, no
-    buffer-from-now, no hard-coded max chunk count). If the LLM has no
-    evidence for a duration, it is allowed to emit null and the bootstrap
-    default is used with a loud first-use event.
+    - no hand-written heuristics about timing (no top-of-hour rounding, no
+        buffer-from-now)
 """
 
 from __future__ import annotations
@@ -22,18 +20,10 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Callable, Sequence
 
-from ..config import (
-    BOOTSTRAP_FOCAL_TEXT_TRUNCATE_CHARS,
-    BOOTSTRAP_RETRIEVAL_TOP_K,
-    BOOTSTRAP_RETRIEVAL_TRUNCATE_CHARS,
-    BOOTSTRAP_SCHEDULER_EVENT_SUMMARY_CHARS,
-    BOOTSTRAP_SCHEDULER_MAX_CALENDAR_EVENTS,
-    BOOTSTRAP_SCHEDULER_MAX_RETRIES,
-    log_bootstrap_use,
-)
+from ..config import SCHEDULER_MAX_RETRIES
 from ..errors import LLMError, LLMRepairError, SchedulerError
 from .. import diag
-from ..libbie import retrieve
+from ..libbie import curate, retrieve
 from ..libbie.store import write_event
 from ..llm.client import OllamaClient
 from ..llm.repair import parse_and_validate
@@ -60,9 +50,10 @@ class MoveRequest(pydantic.BaseModel):
     new_start: str
     new_end: str
 
+
 class ScheduleBundle(pydantic.BaseModel):
-    start: str
-    end: str
+    start: str | None = None
+    end: str | None = None
     moves: list[MoveRequest] = pydantic.Field(default_factory=list)
     rationale: str | None = ""
 
@@ -70,10 +61,8 @@ class ScheduleBundle(pydantic.BaseModel):
 
 
 @dataclass(frozen=True)
-class Chunk:
-    """One scheduled block. v0 does not split tasks, so chunk_count is always 1."""
-    index: int
-    count: int
+class ScheduledBlock:
+    """One scheduled block for a task."""
     start: datetime
     end: datetime
 
@@ -89,7 +78,7 @@ class Displacement:
 @dataclass(frozen=True)
 class SchedulePlan:
     total_minutes: int
-    chunks: list[Chunk]
+    block: ScheduledBlock
     displacements: list[Displacement]
     rationale: str
 
@@ -141,8 +130,8 @@ Rules:
 Return JSON with this exact shape:
 
 {
-  "start": "YYYY-MM-DD HH:MM",
-  "end":   "YYYY-MM-DD HH:MM",
+    "start": "YYYY-MM-DD HH:MM",
+    "end": "YYYY-MM-DD HH:MM",
   "moves": [
     {"google_event_id": "...", "new_start": "YYYY-MM-DD HH:MM", "new_end": "YYYY-MM-DD HH:MM"}
   ],
@@ -168,12 +157,9 @@ def _fmt_events(events: Sequence[ExistingEvent], tz) -> str:
     if not events:
         return "(none)"
     lines = []
-    cap = BOOTSTRAP_SCHEDULER_EVENT_SUMMARY_CHARS
     for e in events:
         tag = "caden_owned" if e.caden_owned else "external"
         summary = e.summary or ""
-        if len(summary) > cap:
-            summary = summary[:cap] + "…"
         lines.append(
             f"- id={e.google_event_id!r} {tag} "
             f"{_fmt_local(e.start, tz)} → {_fmt_local(e.end, tz)}  {summary!r}"
@@ -259,66 +245,28 @@ def plan(
     # Recent Libbie memory (so the LLM can see past similar tasks).
     ctx_block = "(none)"
     if description_embedding is not None:
-        log_bootstrap_use(conn, "BOOTSTRAP_RETRIEVAL_TOP_K", BOOTSTRAP_RETRIEVAL_TOP_K)
-        log_bootstrap_use(
+        _ligand, context, _ranked = retrieve.recall_packets_for_query(
             conn,
-            "BOOTSTRAP_RETRIEVAL_TRUNCATE_CHARS",
-            BOOTSTRAP_RETRIEVAL_TRUNCATE_CHARS,
-        )
-        neighbours = retrieve.search(
-            conn,
+            description,
             description_embedding,
-            k=BOOTSTRAP_RETRIEVAL_TOP_K,
             sources=(
                 "task",
                 "prediction",
                 "residual",
                 "rating",
                 "sean_chat",
-                "intake_self_knowledge",
             ),
         )
-        trunc = BOOTSTRAP_RETRIEVAL_TRUNCATE_CHARS
-        if neighbours:
-            # Reasoning models loop when fed pages of memory. Take only the
-            # top 5 most-relevant neighbours and truncate each more
-            # aggressively for the scheduler's prompt — the chat surface
-            # gets the full retrieval budget elsewhere.
-            ctx_block = "\n".join(
-                f"- [{r.event.timestamp} / {r.event.source}] "
-                f"{(r.event.raw_text[:200] + '…') if len(r.event.raw_text) > 200 else r.event.raw_text}"
-                for r in neighbours[:5]
+        if context.recalled_memories:
+            ctx_block = curate.package_recall_context(
+                description,
+                context.recalled_memories[:5],
             )
 
-    # Refuse to swamp the model with a window full of meetings. Past this
-    # cap the prompt is so dense the LLM can't reliably reason about
-    # conflicts; surface it as a hard error so upstream can narrow the
-    # window or summarise.
-    if len(existing_events) > BOOTSTRAP_SCHEDULER_MAX_CALENDAR_EVENTS:
-        raise SchedulerError(
-            f"scheduler window contains {len(existing_events)} events, "
-            f"above BOOTSTRAP_SCHEDULER_MAX_CALENDAR_EVENTS="
-            f"{BOOTSTRAP_SCHEDULER_MAX_CALENDAR_EVENTS}; narrow the window "
-            f"or pre-summarise before calling plan()."
-        )
-    log_bootstrap_use(
-        conn,
-        "BOOTSTRAP_SCHEDULER_MAX_CALENDAR_EVENTS",
-        BOOTSTRAP_SCHEDULER_MAX_CALENDAR_EVENTS,
-    )
-    log_bootstrap_use(
-        conn,
-        "BOOTSTRAP_FOCAL_TEXT_TRUNCATE_CHARS",
-        BOOTSTRAP_FOCAL_TEXT_TRUNCATE_CHARS,
-    )
-
-    focal_cap = BOOTSTRAP_FOCAL_TEXT_TRUNCATE_CHARS
-    desc_block = description if len(description) <= focal_cap else description[:focal_cap] + "…"
+    desc_block = description
     prefs_raw = (preferences or "").strip()
     if not prefs_raw:
         prefs_block = "(none)"
-    elif len(prefs_raw) > focal_cap:
-        prefs_block = prefs_raw[:focal_cap] + "…"
     else:
         prefs_block = prefs_raw
 
@@ -331,17 +279,12 @@ def plan(
         f"ignore what conflicts with hard constraints, surface conflicts in\n"
         f"your rationale):\n{prefs_block}\n\n"
         f"Existing events between now and deadline:\n{_fmt_events(existing_events, local_tz)}\n\n"
-        f"Relevant memory from Libbie:\n{ctx_block}\n\n"
+        f"Libbie context:\n{ctx_block}\n\n"
         f"Emit a JSON schedule per the system instructions. "
         f"Use 'YYYY-MM-DD HH:MM' for every timestamp."
     )
 
-    log_bootstrap_use(
-        conn,
-        "BOOTSTRAP_SCHEDULER_MAX_RETRIES",
-        BOOTSTRAP_SCHEDULER_MAX_RETRIES,
-    )
-    max_attempts = max(1, int(BOOTSTRAP_SCHEDULER_MAX_RETRIES) + 1)
+    max_attempts = max(1, int(SCHEDULER_MAX_RETRIES) + 1)
     lessons: list[str] = []
     last_attempt_summary: str | None = None
     for attempt in range(1, max_attempts + 1):
@@ -429,6 +372,13 @@ def plan(
                         "lessons": lessons,
                     },
                 )
+        diag.log(
+            "scheduler ✓ plan",
+            f"start={sched.block.start.isoformat()}\n"
+            f"end={sched.block.end.isoformat()}\n"
+            f"total_minutes={sched.total_minutes}\n"
+            f"displacements={len(sched.displacements)}",
+        )
         return sched
     # Unreachable: the loop either returns or raises.
     raise SchedulerError("scheduler retry loop exited without a result")
@@ -494,40 +444,47 @@ def _attempt_plan(
         rj.__cause__ = ValueError(raw[:400])
         raise rj from e
 
+    if obj.start is None or obj.end is None:
+        raise _PlanRejection(
+            "your schedule output must include both top-level start and end "
+            "fields in 'YYYY-MM-DD HH:MM' form."
+        )
+
     try:
         start = _parse_local(obj.start, "start", local_tz)
         end = _parse_local(obj.end, "end", local_tz)
     except LLMRepairError as e:
         raise _PlanRejection(
-            f"one of your timestamps was not in the required "
+            f"one of your schedule timestamps was not in the required "
             f"'YYYY-MM-DD HH:MM' form: {e}. Emit local wall-clock with no "
             f"timezone offset, no 'Z', and no AM/PM."
         ) from e
 
+    block = ScheduledBlock(start=start, end=end)
+
     moves_raw = obj.moves
     rationale = obj.rationale.strip() if obj.rationale else ""
 
-    # Hard constraints on the proposed block itself.
-    if end <= start:
-        raise _PlanRejection(
-            f"you proposed end {_fmt_local(end, local_tz)} ≤ start "
-            f"{_fmt_local(start, local_tz)}. The end must be strictly after "
-            f"the start."
-        )
     # The LLM emits minute-precision times; floor `now` to the minute so a
     # proposal at the current minute is not rejected for sub-minute drift.
     now_floor = now.replace(second=0, microsecond=0)
-    if start < now_floor:
+    if block.end <= block.start:
         raise _PlanRejection(
-            f"you proposed start {_fmt_local(start, local_tz)} which is "
-            f"before now ({_fmt_local(now, local_tz)}). The start must not "
-            f"be before now."
+            f"you proposed end {_fmt_local(block.end, local_tz)} ≤ start "
+            f"{_fmt_local(block.start, local_tz)}. The scheduled block must "
+            f"end strictly after it starts."
         )
-    if end > deadline:
+    if block.start < now_floor:
         raise _PlanRejection(
-            f"you proposed end {_fmt_local(end, local_tz)} which is past "
-            f"the deadline ({_fmt_local(deadline, local_tz)}). The end must "
-            f"not be after the deadline."
+            f"you proposed start {_fmt_local(block.start, local_tz)}, before "
+            f"now ({_fmt_local(now, local_tz)}). The scheduled block must not "
+            f"start in the past."
+        )
+    if block.end > deadline:
+        raise _PlanRejection(
+            f"you proposed end {_fmt_local(block.end, local_tz)}, past the "
+            f"deadline ({_fmt_local(deadline, local_tz)}). The scheduled block "
+            f"must end on or before the deadline."
         )
 
     # Validate moves: only caden_owned events may be moved, no malformed
@@ -588,9 +545,9 @@ def _attempt_plan(
     #
     #   1. Build the "effective" event timeline = external events as-is +
     #      caden_owned events at their (possibly moved) positions.
-    #   2. The proposed block must not overlap any of those.
+    #   2. The proposed block may not overlap any of those.
     #   3. Each move's new position must not overlap an external event,
-    #      the proposed task block, or another move.
+    #      the proposed block, or another move.
     #
     # Overlap convention: half-open intervals — [a, b) overlaps [c, d) iff
     # a < d and c < b. Touching at a single instant (a == d) is fine.
@@ -624,22 +581,18 @@ def _attempt_plan(
 
     # 2. Proposed block vs every effective event.
     for label, es, ee, is_external in effective:
-        if _overlaps(start, end, es, ee):
+        if _overlaps(block.start, block.end, es, ee):
             if is_external:
                 raise _PlanRejection(
-                    f"your proposed block "
-                    f"{_fmt_local(start, local_tz)} → "
-                    f"{_fmt_local(end, local_tz)} overlaps the {label}. "
-                    f"External events MUST NOT be overlapped. Pick a "
-                    f"different window."
+                    f"your proposed block ({_fmt_local(block.start, local_tz)} → "
+                    f"{_fmt_local(block.end, local_tz)}) overlaps the {label}. "
+                    f"External events MUST NOT be overlapped. Pick a different window."
                 )
             raise _PlanRejection(
-                f"your proposed block "
-                f"{_fmt_local(start, local_tz)} → "
-                f"{_fmt_local(end, local_tz)} overlaps the {label}. "
-                f"You may overlap a caden_owned event ONLY if you also move "
-                f"it via the 'moves' list. Either include a move for it or "
-                f"pick a different window."
+                f"your proposed block ({_fmt_local(block.start, local_tz)} → "
+                f"{_fmt_local(block.end, local_tz)}) overlaps the {label}. You may "
+                f"overlap a caden_owned event ONLY if you also move it via the 'moves' "
+                f"list. Either include a move for it or pick a different window."
             )
 
     # 3. Each move's new position vs externals, the task block, and other moves.
@@ -668,24 +621,22 @@ def _attempt_plan(
                     f"{label}. Move the displaced block to a slot that is "
                     f"actually free."
                 )
-        if _overlaps(d.new_start, d.new_end, start, end):
+        if _overlaps(d.new_start, d.new_end, block.start, block.end):
             raise _PlanRejection(
                 f"your move of {d.google_event_id!r} to "
                 f"{_fmt_local(d.new_start, local_tz)} → "
-                f"{_fmt_local(d.new_end, local_tz)} overlaps your own "
-                f"proposed task block "
-                f"{_fmt_local(start, local_tz)} → "
-                f"{_fmt_local(end, local_tz)}. The whole point of moving it "
+                f"{_fmt_local(d.new_end, local_tz)} overlaps your own proposed "
+                f"block ({_fmt_local(block.start, local_tz)} → "
+                f"{_fmt_local(block.end, local_tz)}). The whole point of moving it "
                 f"is to free that window — pick a different destination."
             )
 
-    # Duration is end - start by definition. Not an LLM field, not a fallback.
-    total_minutes = int(round((end - start).total_seconds() / 60.0))
+    # Duration is derived from the scheduled block. Not an LLM field, not a fallback.
+    total_minutes = int(round((block.end - block.start).total_seconds() / 60.0))
 
-    chunks = [Chunk(index=0, count=1, start=start, end=end)]
     return SchedulePlan(
         total_minutes=total_minutes,
-        chunks=chunks,
+        block=block,
         displacements=displacements,
         rationale=rationale,
     )

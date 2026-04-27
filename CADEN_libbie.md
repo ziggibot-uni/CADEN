@@ -72,16 +72,200 @@ Out of scope entirely:
 Restated so this doc is self-contained:
 
 - One sqlite DB with sqlite-vec.
-- An `events` table with `id`, `timestamp`, `source`, `raw_text`,
-  `embedding`. This is canonical memory.
+- A raw `events` log that acts as immutable provenance.
+- A curated `memories` layer that acts as the CADEN-facing reasoning unit.
 - Typed sibling tables (`ratings`, `predictions`, `residuals`, `tasks`,
   `task_events`) for structured access; their rows are also recorded as
-  events so unified retrieval works.
-- Basic top-k semantic search over embeddings, used by the LLM client
-  and the rater to build prompts.
+  events and may also yield curated memory rows when appropriate.
+- Libbie-owned chat-context packaging that returns compact recalled-memory
+  context rather than raw event dumps.
 - Embedding via `nomic-embed-text`.
 
 Everything below assumes this substrate exists.
+
+---
+
+## Ligands And Memory Frames In The Current Design
+
+The design in this repo already has the right ownership boundary for the
+new architecture:
+
+- CADEN reasons.
+- Libbie stores, canonicalizes, retrieves, filters, and packages.
+- sqlite-vec does similarity only.
+- A small ranking model can sit inside Libbie's retrieval pipeline
+  without leaking its logic into CADEN.
+
+The key design move is the unit of retrieval. CADEN receives compressed
+recall packets derived from structured memory frames rather than raw event
+rows. That requires splitting **capture-log storage** from **reasoning
+memory**.
+
+The committed shape for this repo is:
+
+- Keep `events` as the immutable system log. Every chat, residual,
+  prediction, task update, SearXNG fetch, and schema-growth action still
+  lands there first.
+- Add a Libbie-owned `memories` table for curated recall units. Each row
+  stores the `@mem` fields (`id`, `type`, `domain`, `tags`, `context`,
+  `outcome`, `hooks`, `embedding_text`) plus provenance back to the
+  originating `event_id` when one exists.
+- Move CADEN-facing retrieval off raw `events` and onto `memories`.
+  The vector index should embed `embedding_text` only, exactly as the
+  proposed design requires.
+- Keep the raw event log available for audit, replay, residual analysis,
+  and future re-canonicalization. CADEN should not read from it directly.
+
+This preserves the current "one DB for everything" rule while stopping raw
+event text from becoming the long-term reasoning unit.
+
+### Canonical DSL meanings
+
+These terms are now fixed across the docs:
+
+- **MemoryFrame**: Libbie's canonical structured representation of a useful
+  remembered unit. It is produced from raw provenance, stored in `memories`,
+  and carries the fields that support meaning-preserving retrieval.
+- **RecallPacket**: the compressed packet Libbie returns to CADEN for the
+  current task. It is derived from retrieved memory frames and is shaped for
+  immediate model use rather than full provenance display.
+- **Ligand**: transient Libbie-only retrieval steering state built from the
+  current task and context. It influences retrieval and ranking for one pass,
+  is not stored as memory, and is not exposed as a public CADEN object.
+
+### Where ligands belong
+
+Ligands are a Libbie-only retrieval steering object. They are constructed
+inside `libbie.retrieve(...)` from the current task/context, not in the chat
+widget and not in CADEN's prompt code.
+
+Concrete placement in this repo:
+
+- `caden/ui/chat.py` passes only the current task text and recent
+  ephemeral conversation to Libbie.
+- `caden/libbie/curate.py` asks Libbie retrieval for a CADEN-ready
+  context object, not assemble raw memory lines itself.
+- `caden/learning/schema.py` is the right home for the stable typed DSL:
+  `Ligand`, `MemoryFrame`, `RecallPacket`, `CadenContext`,
+  `KnowledgePacket`, `Evaluation`.
+- `caden/libbie/retrieve.py` owns ligand construction,
+  vector-query preparation, deterministic filtering, optional judge-model
+  ranking, and final recall-packet selection.
+
+The ligand is not stored as memory. It exists for one retrieval pass,
+influences the vector query and deterministic filters, then disappears.
+If CADEN needs a hint of the current cognitive intent, Libbie can expose
+that as a compressed line in the packaged context, but CADEN should not
+see the full ligand object or perform any ligand logic.
+
+### Capture and canonicalization pipeline
+
+The current pipeline maps cleanly onto the write path this repo is adopting:
+
+1. `store.write_event(...)` remains the capture-log entry point.
+2. A new Libbie canonicalization step turns a raw event or web finding
+   into one or more `MemoryFrame` objects.
+3. Libbie generates `embedding_text` deterministically from the memory
+   frame plus the current ligand-alignment terms.
+4. Only that `embedding_text` is embedded into the vector table keyed to
+   the memory row, not the raw event row.
+
+This is the important separation:
+
+- raw event text is for provenance and reconstruction
+- memory frame fields are for meaning
+- `embedding_text` is for vector similarity
+
+v0 now adopts that separation as the memory contract. Post-v0 work deepens
+the ranking, surfacing, and learning that operate on top of it.
+
+Current status of canonicalization in this repo:
+
+- the existence of a deterministic raw-event -> `MemoryFrame` step is part of
+  the current v0 contract
+- the exact transitional shaping rules now in code (token extraction,
+  source-to-type mapping, synthetic hooks, summary shortening) are tolerated
+  scaffolding, not frozen architecture
+- the invariants that *are* committed are: provenance is preserved, required
+  frame fields are populated, `embedding_text` is derived from the frame's
+  meaning-bearing content, and CADEN consumes the resulting recall packets
+  rather than raw events
+
+This means future code may replace the current string-shaping details as long
+as those invariants hold and the change moves toward a cleaner canonicalizer
+rather than toward hand-written heuristics about Sean.
+
+### Retrieval pipeline
+
+For this repo, the retrieval flow is:
+
+1. Build a ligand from current task + recent context.
+2. Build a query string/object from task, ligand, candidate tags, and
+   natural-language hooks.
+3. Run vector search over memory `embedding_text`.
+4. Apply deterministic Libbie-side filtering on domain, tags, hooks,
+   provenance, any learned recency term, and a length penalty that favors
+   shorter otherwise-similar memories.
+5. Optionally send the surviving candidates plus the ligand to a small
+   judge model for ranking.
+6. Return top-k `RecallPacket`s.
+7. Package those packets into `@context` for CADEN.
+
+This is the stricter separation the docs now commit to, and it is the right
+direction for keeping a 9B model focused on immediately usable memory.
+
+The length penalty is intentional. Libbie should prefer concise memories when
+semantic similarity is otherwise close, because shorter notes reduce prompt
+bloat and exert pressure toward denser memory writing over time.
+
+One caution: the proposed fixed score
+
+`embedding_similarity * 0.5 + hook_match * 0.3 + tag_overlap * 0.2`
+
+is acceptable as a temporary adapter, but it should not become a
+permanent hand-tuned policy because the top-level spec forbids that kind
+of bespoke heuristic. In this repo, treat those constants as initial
+weights that later migrate under `CADEN_learning.md`'s residual-driven
+weight learning.
+
+### SearXNG's role
+
+SearXNG should not be a general runtime dependency of CADEN's reasoning
+loop. It is a Libbie enrichment tool.
+
+Use it in three places only:
+
+- when canonicalization detects a factual gap while forming a memory
+  candidate
+- when retrieval is thin and Libbie decides external grounding is worth
+  creating as a new memory candidate
+- when ligand refinement needs better domain terms to improve retrieval
+
+The output should first become `@knowledge`, then either:
+
+- be folded into a new `MemoryFrame`, or
+- refine the current ligand before the ranking pass
+
+Do not pass raw SearXNG results straight to CADEN. Keep CADEN consuming
+only the same high-signal compressed memory context.
+
+### Current boundary versus post-v0 work
+
+What is already current-scope truth:
+
+- raw events remain provenance
+- curated memories are the CADEN-facing recall layer
+- ligand ownership belongs to Libbie
+- vector search should be over memory `embedding_text`
+- SearXNG, when present, belongs on the Libbie side rather than being a
+  direct answer surface for CADEN
+
+What remains post-v0:
+
+- learned retrieval weighting replacing temporary fixed scoring adapters
+- richer proactive surfacing mechanisms
+- schema-growth decisions triggered from residuals
+- broader app integration beyond the v0 Dashboard surface
 
 ---
 
@@ -119,8 +303,9 @@ Hard rules for this surface:
 - CADEN's own chat responses are NOT captured as events (see
   Implementation Contracts in `CADEN_v0.md`). Only Sean's inputs and
   external observations enter memory.
-- Intake events bypass the rater (see Implementation Contracts).
-  Retrieval still surfaces them normally.
+- Structural or non-experiential events may bypass the rater per the
+  current Implementation Contracts. Retrieval policy is defined by the
+  active source contract rather than by any one-off capture mode.
 
 ---
 
@@ -272,7 +457,7 @@ Design stance:
   becomes a first-class field is a schema-growth question, not a
   pre-decision.
 
-See `CADEN_project_manager.md` for the app itself. This doc only
+See `CADEN_projectManager.md` for the app itself. This doc only
 asserts the memory discipline.
 
 ---

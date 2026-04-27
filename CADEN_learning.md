@@ -89,8 +89,10 @@ wearing a disguise. Reject it.
 
 ## Retrieval Weight Learning
 
-v0 retrieval is plain top-k over embedding distance. Post-v0, retrieval
-is a weighted combination of signals. Which signals, which weights.
+v0 retrieval already flows through Libbie's curated-memory layer: Libbie
+packages recalled memories for CADEN rather than dumping raw events. Post-v0,
+the ranking inside that retrieval path becomes a learned weighted combination
+of signals. Which signals, which weights.
 
 ### Signals available to retrieval
 
@@ -126,16 +128,13 @@ removed. New signals only enter via schema growth.
 
 Not on a clock. A clock is a heuristic.
 
-Candidate mechanism: fit weights again whenever the running residual
-magnitude crosses a threshold relative to the residual magnitude at the
-last fit. The threshold itself is one of the learned parameters. Bootstrap
-value at system start: fit once after the first N retrievals have
-accumulated residuals (N small, e.g. 50), then let the threshold mechanism
-take over.
-
-Open: whether the bootstrap N is a heuristic. Current stance: no, because
-it's a generic "wait until data exists" gate, not a claim about Sean.
-Revisit if it ossifies into something that looks like a rule.
+Candidate mechanism: refit when the residual stream itself indicates the
+current weights have gone stale. That may look like a learned trigger on
+residual magnitude, residual drift, or some other generic data-availability
+condition, but this doc does not lock in a fixed bootstrap count or any
+specific startup threshold. If a startup gate is required at all, it must be
+treated as an explicitly unresolved design problem rather than silently
+blessed as architecture.
 
 ---
 
@@ -213,6 +212,10 @@ too) and the trigger condition resets.
   (see `CADEN_dashboard.md`) before being committed. v0 does not have
   this surface; the first schema-growth event cannot happen until the
   dashboard supports it. This is a deliberate gate.
+- This dashboard gate is global. Residuals originating in Project
+  Manager, Thought Dump, scheduler behavior, chat, or later apps still
+  funnel to the same Dashboard consent surface rather than creating
+  separate per-app veto UIs.
 
 ---
 
@@ -251,8 +254,8 @@ Phase-change detection is itself a Predict-Observe-Correct loop.
   component it affects.
 - The retrieval weight learner is instructed to refit with
   recency-heavy weighting for the affected signal set. "Recency-heavy"
-  is itself a learned parameter (how heavy), bootstrapped at a
-  conservative value.
+  is itself a learned parameter (how heavy). This doc does not lock in a
+  default bootstrap value for it.
 - Sean is notified on the dashboard. Phase-change events are not
   silent.
 - Old ratings are never deleted or re-rated. They remain data about
@@ -340,11 +343,10 @@ surfaced on the dashboard. Sean picks. His pick is data.
 - **Sean is always informed.** Schema growth, phase-change, and
   optimization onset all notify on the dashboard. CADEN does not change
   itself in secret.
-- **Bootstrap values are not heuristics when they gate data
-  availability.** "Wait for 50 residuals before the first refit" is a
-  gate. "Mondays are bad" is a claim. The first is allowed; the second
-  is not. When unsure which side a parameter falls on, write it down
-  as an open question and revisit.
+- **Fixed bootstrap thresholds are suspect and not assumed valid by
+  default.** If a mechanism seems to require one, treat that as an open
+  design problem to justify or remove, not as something automatically
+  allowed.
 - **Every mechanism can be disabled by its own residuals going flat.**
   If retrieval weight learning never produces weight changes that
   reduce residuals, the learner itself should be reconsidered. Same
@@ -361,8 +363,8 @@ Must fail loudly:
 - Regression refit fails to converge (scikit-learn raises).
 - LLM proposal for schema growth returns malformed output the repair
   layer cannot fix.
-- Back-fill of a proposed field fails for more than a threshold of
-  past events.
+- Back-fill of a proposed field fails at a rate high enough that the
+  proposal cannot be trusted.
 - Phase-change detector signals contradictory conditions (both biased
   and flat).
 - Active optimization asked to run before readiness conditions met.
@@ -374,8 +376,9 @@ are events too.
 
 ## Open Questions
 
-- Is "wait for N residuals before first refit" the right bootstrap
-  gate, or is there a more principled condition?
+- If retrieval-weight learning needs a startup gate, what principled
+  data-readiness condition should trigger the first refit without
+  smuggling in a fixed policy?
 - How does CADEN detect that one of its own learning mechanisms has
   stopped helping? Residual-on-residual is recursive; it terminates
   somewhere. Where?

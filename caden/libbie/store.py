@@ -7,27 +7,120 @@ against the DB. That is how we keep the invariant that structured rows
 
 from __future__ import annotations
 
+from collections import deque
 import json
+import re
 import sqlite3
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence, TypeVar
 
 from ..errors import DBError
+from ..learning.schema import MemoryFrame
 from . import db as _db
 
-# Module-level write lock. Every write_* function takes this before touching
-# the DB. The spec calls for "a single async write queue served by one
-# coroutine"; for v0 this lock satisfies the same invariant (no two writers
-# hold a transaction at once) without the queue ceremony. Reads are not
-# guarded — WAL mode handles those. RLock so write_rating etc. can call
-# write_event while still holding it.
-_WRITE_LOCK = threading.RLock()
+@dataclass
+class _WriteQueueState:
+    condition: threading.Condition = field(default_factory=threading.Condition)
+    waiters: deque[object] = field(default_factory=deque)
+    owner_ident: int | None = None
+    depth: int = 0
+
+
+_WRITE_QUEUES: dict[int, _WriteQueueState] = {}
+_WRITE_QUEUES_LOCK = threading.Lock()
+_TOKEN_RE = re.compile(r"[a-z0-9_]{3,}", re.IGNORECASE)
+_STOPWORDS = {
+    "the", "and", "for", "that", "with", "this", "from", "have", "what",
+    "when", "your", "just", "into", "then", "they", "them", "been", "were",
+    "will", "would", "could", "should", "about", "there", "their", "while",
+}
+
+_FORBIDDEN_UNKNOWN_SENTINELS = {-1.0, 999.0}
+_R = TypeVar("_R")
+_WRITE_OBSERVER: Callable[[str], None] | None = None
+
+
+def _write_queue_state(conn: sqlite3.Connection) -> _WriteQueueState:
+    key = id(conn)
+    with _WRITE_QUEUES_LOCK:
+        state = _WRITE_QUEUES.get(key)
+        if state is None:
+            state = _WriteQueueState()
+            _WRITE_QUEUES[key] = state
+        return state
+
+
+def close_write_queue(conn: sqlite3.Connection) -> None:
+    with _WRITE_QUEUES_LOCK:
+        _WRITE_QUEUES.pop(id(conn), None)
+
+
+def _run_write(conn: sqlite3.Connection, func: Callable[[], _R]) -> _R:
+    state = _write_queue_state(conn)
+    current_ident = threading.get_ident()
+
+    with state.condition:
+        if state.owner_ident == current_ident:
+            state.depth += 1
+            reentrant = True
+            token = None
+        else:
+            token = object()
+            state.waiters.append(token)
+            while state.owner_ident is not None or state.waiters[0] is not token:
+                state.condition.wait()
+            state.owner_ident = current_ident
+            state.depth = 1
+            reentrant = False
+
+    try:
+        if _WRITE_OBSERVER is not None:
+            _WRITE_OBSERVER("start")
+        return func()
+    finally:
+        if _WRITE_OBSERVER is not None:
+            _WRITE_OBSERVER("end")
+        with state.condition:
+            state.depth -= 1
+            if state.depth == 0:
+                state.owner_ident = None
+                if not reentrant and token is not None and state.waiters and state.waiters[0] is token:
+                    state.waiters.popleft()
+                state.condition.notify_all()
 
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _meta_value_text(value: Any) -> str:
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (dict, list, tuple)):
+        return json.dumps(value, ensure_ascii=False, sort_keys=True)
+    return str(value)
+
+
+def _append_event_metadata(
+    conn: sqlite3.Connection,
+    event_id: int,
+    meta: dict[str, Any],
+    *,
+    created_at: str,
+) -> None:
+    rows = [(event_id, "captured_at", created_at, created_at)]
+    for key, value in meta.items():
+        if key == "captured_at":
+            continue
+        rows.append((event_id, key, _meta_value_text(value), created_at))
+    conn.executemany(
+        "INSERT INTO event_metadata (event_id, key, value, created_at) VALUES (?, ?, ?, ?)",
+        rows,
+    )
 
 
 @dataclass(frozen=True)
@@ -37,6 +130,141 @@ class Event:
     source: str
     raw_text: str
     meta: dict
+
+
+def _tokenize(text: str, *, limit: int = 8) -> tuple[str, ...]:
+    seen: list[str] = []
+    for match in _TOKEN_RE.findall(text.lower()):
+        if match in _STOPWORDS or match in seen:
+            continue
+        seen.append(match)
+        if len(seen) >= limit:
+            break
+    return tuple(seen)
+
+
+def _memory_type_for_source(source: str) -> str:
+    if source in {"rating", "prediction"}:
+        return "rule"
+    if source == "residual":
+        return "pattern"
+    return "experience"
+
+
+def _summary_text(text: str, *, limit: int = 240) -> str:
+    normalized = " ".join(text.split())
+    if len(normalized) <= limit:
+        return normalized
+    return normalized[: limit - 3].rstrip() + "..."
+
+
+def _validate_optional_score(name: str, value: float | None) -> None:
+    if value is None:
+        return
+    numeric = float(value)
+    if numeric in _FORBIDDEN_UNKNOWN_SENTINELS:
+        raise DBError(f"{name} uses forbidden sentinel value {numeric}; use NULL for unknown")
+
+
+def _validate_optional_confidence(name: str, value: float | None) -> None:
+    if value is None:
+        return
+    numeric = float(value)
+    if numeric in _FORBIDDEN_UNKNOWN_SENTINELS:
+        raise DBError(f"{name} uses forbidden sentinel value {numeric}; use NULL for unknown")
+    if not 0.0 <= numeric <= 1.0:
+        raise DBError(f"{name}={numeric} is outside the allowed [0.0, 1.0] range")
+
+
+def _memory_frame_for_event(
+    event_id: int,
+    source: str,
+    raw_text: str,
+    meta: dict[str, Any],
+) -> MemoryFrame:
+    # This is intentionally deterministic transitional scaffolding: the
+    # boundary from raw provenance to MemoryFrame is part of the contract,
+    # but the exact token/hook phrasing here is not frozen architecture.
+    tags = list(_tokenize(raw_text, limit=8))
+    tags.insert(0, source)
+    domain = str(meta.get("domain") or source).strip().replace(" ", "_")
+    if domain not in tags:
+        tags.append(domain)
+    for key in meta.keys():
+        key_text = str(key).strip()
+        if key_text and key_text not in tags:
+            tags.append(key_text)
+    hooks = [f"when dealing with {source.replace('_', ' ')}"]
+    for token in tags[1:4]:
+        hooks.append(f"when {token.replace('_', ' ')} matters")
+    outcome = str(meta.get("rationale") or meta.get("outcome") or raw_text).strip()
+    embedding_text = " ".join(
+        part for part in [domain, source, " ".join(tags), raw_text, outcome] if part
+    )
+    return MemoryFrame(
+        id=f"event:{event_id}",
+        type=_memory_type_for_source(source),
+        domain=domain,
+        tags=tuple(tags),
+        context=_summary_text(raw_text, limit=500),
+        outcome=_summary_text(outcome, limit=240),
+        hooks=tuple(hooks),
+        embedding_text=_summary_text(embedding_text, limit=1000),
+    )
+
+
+def _upsert_memory_row(
+    conn: sqlite3.Connection,
+    event_id: int,
+    source: str,
+    raw_text: str,
+    meta: dict[str, Any],
+    embedding: Sequence[float] | None,
+) -> None:
+    frame = _memory_frame_for_event(event_id, source, raw_text, meta)
+    cur = conn.execute(
+        """
+        INSERT INTO memories (
+          event_id, memory_key, memory_type, source, domain,
+          tags_json, context, outcome, hooks_json, embedding_text, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(memory_key) DO UPDATE SET
+          source=excluded.source,
+          domain=excluded.domain,
+          tags_json=excluded.tags_json,
+          context=excluded.context,
+          outcome=excluded.outcome,
+          hooks_json=excluded.hooks_json,
+          embedding_text=excluded.embedding_text
+        """,
+        (
+            event_id,
+            frame.id,
+            frame.type,
+            source,
+            frame.domain,
+            json.dumps(frame.tags, ensure_ascii=False),
+            frame.context,
+            frame.outcome,
+            json.dumps(frame.hooks, ensure_ascii=False),
+            frame.embedding_text,
+            _now_iso(),
+        ),
+    )
+    memory_id = int(cur.lastrowid or conn.execute(
+        "SELECT id FROM memories WHERE memory_key=?", (frame.id,)
+    ).fetchone()[0])
+    if embedding is None:
+        return
+    blob = _db.pack_vector(embedding)
+    conn.execute(
+        "INSERT OR REPLACE INTO memory_embeddings (memory_id, embedding) VALUES (?, ?)",
+        (memory_id, blob),
+    )
+    conn.execute(
+        "INSERT OR REPLACE INTO vec_memories (rowid, embedding) VALUES (?, ?)",
+        (memory_id, blob),
+    )
 
 
 # ---- events ------------------------------------------------------------------
@@ -56,8 +284,9 @@ def write_event(
     Sean's text, CADEN's text, ratings, predictions, or residuals should
     always have an embedding so retrieval sees them.
     """
-    with _WRITE_LOCK:
+    def _op() -> int:
         try:
+            captured_at = _now_iso()
             cur = conn.execute(
                 "INSERT INTO events (timestamp, source, raw_text, meta_json) VALUES (?, ?, ?, ?)",
                 (
@@ -78,9 +307,12 @@ def write_event(
                     "INSERT INTO vec_events (rowid, embedding) VALUES (?, ?)",
                     (event_id, blob),
                 )
+            _upsert_memory_row(conn, event_id, source, raw_text, meta or {}, embedding)
+            _append_event_metadata(conn, event_id, meta or {}, created_at=captured_at)
             return event_id
         except sqlite3.Error as e:
             raise DBError(f"failed to write event (source={source!r}): {e}") from e
+    return _run_write(conn, _op)
 
 
 # ---- ratings -----------------------------------------------------------------
@@ -98,7 +330,13 @@ def write_rating(
     embedding: Sequence[float] | None,
 ) -> int:
     """Write a rating row and mirror it into events as source='rating'."""
-    with _WRITE_LOCK:
+    _validate_optional_score("mood", mood)
+    _validate_optional_score("energy", energy)
+    _validate_optional_score("productivity", productivity)
+    _validate_optional_confidence("conf_mood", c_mood)
+    _validate_optional_confidence("conf_energy", c_energy)
+    _validate_optional_confidence("conf_productivity", c_productivity)
+    def _op() -> int:
         try:
             cur = conn.execute(
                 """
@@ -126,6 +364,7 @@ def write_rating(
             raw_text=mirror_text,
             embedding=embedding,
             meta={
+                "structured_id": rating_id,
                 "rating_id": rating_id,
                 "event_id": event_id,
                 "mood": mood,
@@ -137,6 +376,7 @@ def write_rating(
             },
         )
         return rating_id
+    return _run_write(conn, _op)
 
 
 def _fmt(v: float | None) -> str:
@@ -152,7 +392,7 @@ def write_task(
     google_task_id: str | None,
     embedding: Sequence[float] | None,
 ) -> int:
-    with _WRITE_LOCK:
+    def _op() -> int:
         try:
             cur = conn.execute(
                 """
@@ -171,34 +411,78 @@ def write_task(
             source="task",
             raw_text=f"Task: {description} (deadline {deadline_iso})",
             embedding=embedding,
-            meta={"task_id": task_id, "google_task_id": google_task_id, "deadline": deadline_iso},
+            meta={
+                "structured_id": task_id,
+                "task_id": task_id,
+                "google_task_id": google_task_id,
+                "deadline": deadline_iso,
+            },
         )
         return task_id
+    return _run_write(conn, _op)
 
 
 def link_task_event(
     conn: sqlite3.Connection,
     task_id: int,
     google_event_id: str,
-    chunk_index: int,
-    chunk_count: int,
     planned_start_iso: str,
     planned_end_iso: str,
 ) -> int:
-    with _WRITE_LOCK:
+    def _op() -> int:
         try:
             cur = conn.execute(
                 """
                 INSERT INTO task_events
-                  (task_id, google_event_id, chunk_index, chunk_count, planned_start, planned_end)
-                VALUES (?, ?, ?, ?, ?, ?)
+                                    (task_id, google_event_id, planned_start, planned_end)
+                                VALUES (?, ?, ?, ?)
                 """,
-                (task_id, google_event_id, chunk_index, chunk_count,
-                 planned_start_iso, planned_end_iso),
+                                (task_id, google_event_id, planned_start_iso, planned_end_iso),
             )
-            return int(cur.lastrowid)
+            task_event_id = int(cur.lastrowid)
         except sqlite3.Error as e:
             raise DBError(f"failed to link task_event: {e}") from e
+
+        write_event(
+            conn,
+            source="task_event",
+            raw_text=(
+                f"Task event for task #{task_id}: {planned_start_iso} -> {planned_end_iso} "
+                f"(google_event_id={google_event_id})"
+            ),
+            embedding=None,
+            meta={
+                "structured_id": task_event_id,
+                "task_id": task_id,
+                "google_event_id": google_event_id,
+                "planned_start": planned_start_iso,
+                "planned_end": planned_end_iso,
+            },
+        )
+        return task_event_id
+    return _run_write(conn, _op)
+
+
+def update_task_event_plan(
+    conn: sqlite3.Connection,
+    google_event_id: str,
+    planned_start_iso: str,
+    planned_end_iso: str,
+) -> None:
+    def _op() -> None:
+        try:
+            conn.execute(
+                """
+                UPDATE task_events
+                SET planned_start=?, planned_end=?
+                WHERE google_event_id=?
+                """,
+                (planned_start_iso, planned_end_iso, google_event_id),
+            )
+        except sqlite3.Error as e:
+            raise DBError(f"failed to update task_event plan for {google_event_id!r}: {e}") from e
+
+    _run_write(conn, _op)
 
 
 def complete_task(
@@ -206,7 +490,7 @@ def complete_task(
     task_id: int,
     completed_at_iso: str,
 ) -> None:
-    with _WRITE_LOCK:
+    def _op() -> None:
         try:
             conn.execute(
                 "UPDATE tasks SET status='complete', completed_at_utc=? WHERE id=?",
@@ -221,6 +505,7 @@ def complete_task(
             )
         except sqlite3.Error as e:
             raise DBError(f"failed to complete task {task_id}: {e}") from e
+    _run_write(conn, _op)
 
 
 # ---- predictions -------------------------------------------------------------
@@ -236,7 +521,20 @@ def write_prediction(
     rationale: str,
     embedding: Sequence[float] | None,
 ) -> int:
-    with _WRITE_LOCK:
+    _validate_optional_score("pred_pre_mood", pre[0])
+    _validate_optional_score("pred_pre_energy", pre[1])
+    _validate_optional_score("pred_pre_productivity", pre[2])
+    _validate_optional_score("pred_post_mood", post[0])
+    _validate_optional_score("pred_post_energy", post[1])
+    _validate_optional_score("pred_post_productivity", post[2])
+    _validate_optional_confidence("conf_duration", confidences.get("duration"))
+    _validate_optional_confidence("conf_pre_mood", confidences.get("pre_mood"))
+    _validate_optional_confidence("conf_pre_energy", confidences.get("pre_energy"))
+    _validate_optional_confidence("conf_pre_productivity", confidences.get("pre_productivity"))
+    _validate_optional_confidence("conf_post_mood", confidences.get("post_mood"))
+    _validate_optional_confidence("conf_post_energy", confidences.get("post_energy"))
+    _validate_optional_confidence("conf_post_productivity", confidences.get("post_productivity"))
+    def _op() -> int:
         try:
             cur = conn.execute(
                 """
@@ -275,6 +573,7 @@ def write_prediction(
             ),
             embedding=embedding,
             meta={
+                "structured_id": prediction_id,
                 "prediction_id": prediction_id,
                 "task_id": task_id,
                 "google_event_id": google_event_id,
@@ -285,6 +584,7 @@ def write_prediction(
             },
         )
         return prediction_id
+    return _run_write(conn, _op)
 
 
 def write_residual(
@@ -296,7 +596,7 @@ def write_residual(
     post_residuals: tuple[float | None, float | None, float | None],
     embedding: Sequence[float] | None,
 ) -> int:
-    with _WRITE_LOCK:
+    def _op() -> int:
         try:
             cur = conn.execute(
                 """
@@ -331,6 +631,7 @@ def write_residual(
             ),
             embedding=embedding,
             meta={
+                "structured_id": residual_id,
                 "residual_id": residual_id,
                 "prediction_id": prediction_id,
                 "duration_actual_min": duration_actual_min,
@@ -340,6 +641,7 @@ def write_residual(
             },
         )
         return residual_id
+    return _run_write(conn, _op)
 
 
 # ---- reads convenience -------------------------------------------------------
@@ -358,6 +660,50 @@ def load_event(conn: sqlite3.Connection, event_id: int) -> Event | None:
         raw_text=row["raw_text"],
         meta=_safe_json(row["meta_json"]),
     )
+
+
+def event_has_metadata_key(
+    conn: sqlite3.Connection,
+    event_id: int,
+    key: str,
+) -> bool:
+    row = conn.execute(
+        """
+        SELECT 1
+        FROM event_metadata
+        WHERE event_id=? AND key=?
+        LIMIT 1
+        """,
+        (event_id, key),
+    ).fetchone()
+    return row is not None
+
+
+def append_event_metadata(
+    conn: sqlite3.Connection,
+    event_id: int,
+    key: str,
+    value: Any,
+) -> None:
+    """Append one metadata row for an existing event.
+
+    This preserves append-only semantics: no updates, no deletes.
+    """
+    def _op() -> None:
+        try:
+            exists = conn.execute(
+                "SELECT 1 FROM events WHERE id=? LIMIT 1",
+                (event_id,),
+            ).fetchone()
+            if exists is None:
+                raise DBError(f"cannot append metadata: event id {event_id} does not exist")
+            conn.execute(
+                "INSERT INTO event_metadata (event_id, key, value, created_at) VALUES (?, ?, ?, ?)",
+                (event_id, key, _meta_value_text(value), _now_iso()),
+            )
+        except sqlite3.Error as e:
+            raise DBError(f"failed to append metadata for event {event_id}: {e}") from e
+    _run_write(conn, _op)
 
 
 def recent_events(

@@ -1,20 +1,21 @@
 """Chat widget: the middle panel.
 
-Per CADEN_v0.md "Chat events":
-  - only Sean's messages are stored as events (with embeddings)
-  - CADEN's responses are NOT stored as events — visible in the chat panel
-    during the session but ephemeral from a memory standpoint
-  - within a session, CADEN's last few replies are passed as immediate
-    context to the next LLM call, but never persisted or embedded
+Per CADEN contracts:
+    - Sean's messages are stored as events (with embeddings)
+    - CADEN's responses are also stored as events (with embeddings) so the
+        full conversation stream can be recalled later if needed
+    - within a session, CADEN's last few replies are passed as immediate
+        context to the next LLM call for coherence
 
 What happens when Sean sends a message:
   1. embed Sean's text
   2. write it as an event (source='sean_chat')
   3. retrieve relevant memory for a reply (top-K from Libbie)
   4. ask ollama for a reply (streaming, with reasoning split out)
-  5. display the reply + thinking in the panel (no DB write)
-  6. remember the reply in an in-process deque for next-turn coherence
-  7. enqueue Sean's event for the rater queue (background, single
+    5. display the reply + thinking in the panel
+    6. persist CADEN's reply as a chat event
+    7. remember the reply in an in-process deque for next-turn coherence
+    8. enqueue Sean's event for the rater queue (background, single
      consumer, yields the Ollama slot whenever chat needs it)
 """
 
@@ -30,7 +31,9 @@ from textual.widget import Widget
 from textual.widgets import Collapsible, Input, Static
 
 from ..errors import CadenError, LLMAborted, LLMError, RaterError
+from ..libbie import recall, search_web
 from ..libbie.curate import package_chat_context
+from ..libbie.why import generate_why_for_event
 from ..libbie.store import Event, load_event, write_event
 from ..rater.rate import rate_event
 from ..util.timefmt import to_12hr
@@ -62,19 +65,18 @@ Time format rule (Sean reads in 12-hour AM/PM):
 # Spec: "CADEN's last few responses are passed as immediate context to the
 # next LLM call, but never persisted as events." The deque is process-local
 # and cleared on shutdown.
-_SESSION_REPLY_MEMORY_SIZE = 15
+_SESSION_REPLY_MEMORY_SIZE = 4
 
 # Sources retrieval pulls from for chat replies. Note: 'caden_chat' is
-# deliberately absent — CADEN never retrieves its own prior answers as if
-# they were ground truth (spec: "keeps memory pristine to Sean's signal").
+# deliberately absent — CADEN does not treat its own prior answers as
+# ground-truth evidence during recall.
 _CHAT_RETRIEVAL_SOURCES = (
     "sean_chat",
     "rating",
     "task",
     "prediction",
     "residual",
-    "intake_self_knowledge",
-    "intake_code_pattern",
+    "web_knowledge",
     "lesson_learned",  # Added so abstractions/tips are retrievable
 )
 
@@ -84,11 +86,16 @@ class ChatWidget(Vertical):
     ChatWidget {
         layout: vertical;
         height: 100%;
+        color: white;
+        background: #101317;
+        padding: 0 1;
     }
     ChatWidget #chat-log {
         height: 1fr;
-        border: solid $accent;
+        border: solid #2d557a;
         padding: 0 1;
+        background: #0f1115;
+        color: white;
     }
     ChatWidget #chat-log Static.msg {
         margin: 0 0 1 0;
@@ -99,38 +106,38 @@ class ChatWidget(Vertical):
     }
     ChatWidget #chat-thinking-box {
         height: 8;
-        border: round $surface;
+        border: round #2d557a;
         padding: 0 1;
-        background: $boost;
+        background: #141923;
         display: none;
     }
     ChatWidget #chat-thinking-box.-active {
         display: block;
     }
     ChatWidget #chat-thinking {
-        color: $text-muted;
+        color: #cdd5df;
     }
     ChatWidget #chat-status {
         height: 1;
-        color: $text-muted;
+        color: #cdd5df;
     }
     ChatWidget #rater-status {
         height: 1;
-        color: $text-muted;
-        background: $boost;
+        color: #cdd5df;
+        background: #141923;
         padding: 0 1;
     }
     ChatWidget #rater-status.-active {
-        color: $warning;
+        color: #ffd166;
     }
     ChatWidget #rater-status.-streaming {
-        color: $success;
+        color: #8be28b;
     }
     ChatWidget #rater-status.-yielded {
-        color: $accent;
+        color: #6bbcff;
     }
     ChatWidget #rater-status.-error {
-        color: $error;
+        color: #ff7b7b;
     }
     ChatWidget #chat-input {
         dock: bottom;
@@ -138,7 +145,7 @@ class ChatWidget(Vertical):
     }
     ChatWidget #chat-header {
         height: 1;
-        color: $accent;
+        color: white;
     }
     """
 
@@ -149,6 +156,7 @@ class ChatWidget(Vertical):
         self._recent_replies: deque[tuple[str, str]] = deque(
             maxlen=_SESSION_REPLY_MEMORY_SIZE
         )
+        self._last_recall_strip: str | None = None
         # Rater queue — items are (event_id, embedding). A single consumer
         # task processes them one at a time at background priority. The
         # queue is unbounded; it would take an extreme burst of chat to
@@ -166,7 +174,7 @@ class ChatWidget(Vertical):
 
     async def on_mount(self) -> None:
         await self._append(
-            "[dim]CADEN is ready. Every message here is stored in Libbie.[/dim]"
+            "[dim]CADEN is ready. Sean and CADEN messages here are stored in Libbie.[/dim]"
         )
         # Single durable rater consumer. Runs for the lifetime of the
         # widget; gracefully cancelled when the app shuts down.
@@ -212,6 +220,14 @@ class ChatWidget(Vertical):
             self._set_status("[dim]CADEN is thinking\u2026[/dim]")
             reply, thinking = await self._compose_reply(text, sean_emb)
 
+            if self._last_recall_strip:
+                recalled = Collapsible(
+                    Static(self._last_recall_strip, markup=False),
+                    title="recalled memories",
+                    collapsed=True,
+                )
+                await self._append(recalled)
+
             # Park the thinking in a collapsible above the reply so Sean can
             # click it open later. Empty thinking means a non-reasoning turn.
             # IMPORTANT: thinking is displayed only, never stored as an event
@@ -224,6 +240,9 @@ class ChatWidget(Vertical):
                 )
                 await self._append(coll)
             await self._append(f"[bold green]caden[/bold green] {reply}")
+
+            reply_emb = await self._embed(reply)
+            await self._write("caden_chat", reply, reply_emb)
 
             # Remember the reply in-process for next-turn coherence. No DB
             # write, no embedding — ephemeral by design.
@@ -244,24 +263,68 @@ class ChatWidget(Vertical):
             self._set_status("")
 
     def _show_thinking_box(self) -> None:
-        self.query_one("#chat-thinking", Static).update("")
-        self.query_one("#chat-thinking-box", VerticalScroll).add_class("-active")
+        try:
+            self.query_one("#chat-thinking", Static).update("")
+            self.query_one("#chat-thinking-box", VerticalScroll).add_class("-active")
+        except NoMatches:
+            return
 
     def _hide_thinking_box(self) -> None:
-        self.query_one("#chat-thinking-box", VerticalScroll).remove_class("-active")
+        try:
+            self.query_one("#chat-thinking-box", VerticalScroll).remove_class("-active")
+        except NoMatches:
+            return
 
     async def _embed(self, text: str) -> list[float]:
         # Embedder does a blocking HTTP call; keep the event loop free.
         return await asyncio.to_thread(self.services.embedder.embed, text)
 
     async def _write(self, source: str, text: str, emb: list[float]) -> int:
+        meta = None
+        if source in {"sean_chat", "caden_chat"}:
+            meta = {"project_id": None}
         return await asyncio.to_thread(
-            write_event, self.services.conn, source, text, emb, None, None
+            write_event, self.services.conn, source, text, emb, meta, None
         )
 
     async def _compose_reply(
         self, user_text: str, user_emb: list[float]
     ) -> tuple[str, str]:
+        _context, recalled_packets = await asyncio.to_thread(
+            recall,
+            self.services.conn,
+            user_text,
+            embedder=self.services.embedder,
+            sources=_CHAT_RETRIEVAL_SOURCES,
+            recent_exchanges=tuple(self._recent_replies),
+            k=5,
+        )
+        if not recalled_packets and self.services.searxng is not None:
+            await asyncio.to_thread(
+                search_web,
+                self.services.conn,
+                user_text,
+                searxng=self.services.searxng,
+                embedder=self.services.embedder,
+                limit=3,
+            )
+            _context, recalled_packets = await asyncio.to_thread(
+                recall,
+                self.services.conn,
+                user_text,
+                embedder=self.services.embedder,
+                sources=_CHAT_RETRIEVAL_SOURCES,
+                recent_exchanges=tuple(self._recent_replies),
+                k=5,
+            )
+        if recalled_packets:
+            self._last_recall_strip = "\n".join(
+                f"{i}. ({packet.relevance}) {packet.summary}"
+                for i, packet in enumerate(recalled_packets, start=1)
+            )
+        else:
+            self._last_recall_strip = None
+
         # Libbie curates the entire context bundle: retrieval, in-session
         # ephemerals, and the live world (calendar + tasks). The chat
         # widget does not assemble prompt context itself — spec: Libbie
@@ -269,11 +332,13 @@ class ChatWidget(Vertical):
         prompt_body = await asyncio.to_thread(
             package_chat_context,
             self.services.conn,
-            user_emb,
+            user_text,
             _CHAT_RETRIEVAL_SOURCES,
+            embedder=self.services.embedder,
             recent_exchanges=tuple(self._recent_replies),
             calendar=self.services.calendar,
             tasks=self.services.tasks,
+            searxng=self.services.searxng,
         )
 
         user_prompt = (
@@ -386,7 +451,7 @@ class ChatWidget(Vertical):
             on_token=on_token,
         )
         if rating_id is None:
-            # Event was ineligible (intake / structural). Not an error.
+            # Event was ineligible (structural). Not an error.
             self._set_rater_status(
                 f"skipped (event #{event_id}, not ratable)", state=None
             )
@@ -414,6 +479,7 @@ class ChatWidget(Vertical):
                 return
             try:
                 await self._rate_safe(event_id, embedding)
+                await self._why_safe(event_id)
             except LLMAborted:
                 # Cooperative yield: chat (or scheduler) needed the slot.
                 # Put the event back at the end of the queue and try again
@@ -441,6 +507,23 @@ class ChatWidget(Vertical):
                 self._set_rater_status(
                     f"idle (waiting for next event)", state=None
                 )
+
+    async def _why_safe(self, event_id: int) -> None:
+        """Best-effort async why generation; failures never block chat flow."""
+        try:
+            enriched = await asyncio.to_thread(
+                generate_why_for_event,
+                self.services.conn,
+                event_id,
+                self.services.llm,
+            )
+            if enriched:
+                await self._append(f"[dim]why enriched for event #{event_id}[/dim]")
+        except LLMAborted:
+            # Background call yielded to foreground. Allowed partial success.
+            await self._append(f"[dim]why enrichment yielded for event #{event_id}[/dim]")
+        except Exception as e:
+            await self._append(f"[yellow]why enrichment failed for event #{event_id}: {e}[/yellow]")
 
     def _set_rater_status(self, text: str, state: str | None) -> None:
         """Update the rater status line.

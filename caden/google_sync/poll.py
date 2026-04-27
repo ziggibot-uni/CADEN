@@ -30,7 +30,7 @@ def poll_once(
     Returns the list of local task ids finalised in this pass.
     """
     local_rows = conn.execute(
-        "SELECT id, google_task_id FROM tasks WHERE status='open' AND google_task_id IS NOT NULL"
+        "SELECT id, google_task_id FROM tasks WHERE status='open' AND google_task_id IS NOT NULL ORDER BY id ASC"
     ).fetchall()
     if not local_rows:
         return []
@@ -57,7 +57,7 @@ def poll_once(
         te = conn.execute(
             """
             SELECT google_event_id, planned_start FROM task_events WHERE task_id=?
-            ORDER BY chunk_index ASC LIMIT 1
+            ORDER BY id ASC LIMIT 1
             """,
             (row["id"],),
         ).fetchone()

@@ -54,6 +54,7 @@ Yes, exactly!
 ## Architecture
 - documentation and reliability first
 - no hand-written heuristics: all behavior is learned (yes it will suck for a while, but it beats having hand-written crap polluting it's mind from the beginning). the moment a bespoke heuristic is written, caden collapses under pollution. let him figure things outs for himself, and if he can't, you can improve the mechanisms themselves but don't add rules to satisfy shortcomings in the present or you will fall into the "just one more rule" trap. not even one rule.
+- operational presentation/retrieval policies are allowed when they are generic and not claims about Sean himself. current committed examples: the dashboard day rolls over at 5 AM local time to better match circadian rhythm than strict midnight, and Libbie penalizes overly long memories during retrieval so concise memories are favored and LLM context bloat stays under control.
 - Modular
 - Simple
 - Python-only for everything, even if it means a slightly uglier GUI compared to JS or Rust
@@ -71,8 +72,8 @@ Yes, exactly!
 
 ### Dashboard (3 panels) (TBC)
 - The first/default `TabPane` in CADEN's GUI.
-- To the left, the "today" panel which shows everything that Sean has in his google calendar and google tasks for the day, PLUS whatever CADEN had scheduled him for. All events are displayed in the order they start, and all tasks are displayed in the order of due date/time. Types are all mixed, but labeled. Chronological order is more important.
-- To the right, the same thing but for the next 7 days. CADEN doesn't schedule anything past the current day. His scope stays small.
+- To the left, the "today" panel which shows everything that Sean has in his google calendar and google tasks for the current circadian day, PLUS whatever CADEN had scheduled him for. CADEN's dashboard day runs from 5 AM local time to the next 5 AM local time rather than from midnight to midnight. All events are displayed in the order they start, and all tasks are displayed in the order of due date/time. Types are all mixed, but labeled. Chronological order is more important.
+- To the right, the same thing but for the next 7 days. CADEN may schedule his own task blocks at any time before the due date, but he does not move calendar events he did not create. The 7-day view therefore includes future CADEN-scheduled work as well as everything else already on the calendar/task lists.
 - in the middle, the chat interface where Sean can chat with CADEN in a CLI
 - all chats are embedded by libbie into the central vector db
 ### Libbie

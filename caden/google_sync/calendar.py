@@ -21,45 +21,56 @@ class CalendarEvent:
 
 
 class CalendarClient:
-    def __init__(self, credentials, calendar_id: str = "primary") -> None:
+    def __init__(
+        self,
+        credentials,
+        calendar_id: str = "primary",
+        *,
+        readable_calendar_ids: tuple[str, ...] | None = None,
+        writable_calendar_id: str | None = None,
+    ) -> None:
         try:
             self.service = build("calendar", "v3", credentials=credentials, cache_discovery=False)
         except Exception as e:
             raise GoogleSyncError(f"failed to build Calendar service: {e}") from e
-        self.calendar_id = calendar_id
+        self.readable_calendar_ids = readable_calendar_ids or (calendar_id,)
+        self.writable_calendar_id = writable_calendar_id or calendar_id
+        self.calendar_id = self.writable_calendar_id
 
     def list_window(self, start: datetime, end: datetime) -> list[CalendarEvent]:
-        try:
-            resp = (
-                self.service.events()
-                .list(
-                    calendarId=self.calendar_id,
-                    timeMin=start.astimezone(timezone.utc).isoformat(),
-                    timeMax=end.astimezone(timezone.utc).isoformat(),
-                    singleEvents=True,
-                    orderBy="startTime",
-                    maxResults=250,
-                )
-                .execute()
-            )
-        except HttpError as e:
-            raise GoogleSyncError(f"Calendar list failed: {e}") from e
-
         out: list[CalendarEvent] = []
-        for item in resp.get("items", []):
-            s = _parse_time(item.get("start") or {})
-            e = _parse_time(item.get("end") or {})
-            if s is None or e is None:
-                continue
-            out.append(
-                CalendarEvent(
-                    id=item["id"],
-                    summary=item.get("summary") or "(no title)",
-                    start=s,
-                    end=e,
-                    raw=item,
+        for calendar_id in self.readable_calendar_ids:
+            try:
+                resp = (
+                    self.service.events()
+                    .list(
+                        calendarId=calendar_id,
+                        timeMin=start.astimezone(timezone.utc).isoformat(),
+                        timeMax=end.astimezone(timezone.utc).isoformat(),
+                        singleEvents=True,
+                        orderBy="startTime",
+                        maxResults=250,
+                    )
+                    .execute()
                 )
-            )
+            except HttpError as e:
+                raise GoogleSyncError(f"Calendar list failed: {e}") from e
+
+            for item in resp.get("items", []):
+                s = _parse_time(item.get("start") or {})
+                e = _parse_time(item.get("end") or {})
+                if s is None or e is None:
+                    continue
+                out.append(
+                    CalendarEvent(
+                        id=item["id"],
+                        summary=item.get("summary") or "(no title)",
+                        start=s,
+                        end=e,
+                        raw=item,
+                    )
+                )
+        out.sort(key=lambda ev: ev.start)
         return out
 
     def create_event(
@@ -78,7 +89,7 @@ class CalendarClient:
         try:
             created = (
                 self.service.events()
-                .insert(calendarId=self.calendar_id, body=body)
+                .insert(calendarId=self.writable_calendar_id, body=body)
                 .execute()
             )
         except HttpError as e:
@@ -95,7 +106,7 @@ class CalendarClient:
         """Truncate a paired event's end to new_end, e.g. when a task completes early."""
         try:
             self.service.events().patch(
-                calendarId=self.calendar_id,
+                calendarId=self.writable_calendar_id,
                 eventId=event_id,
                 body={"end": {"dateTime": new_end.astimezone(timezone.utc).isoformat()}},
             ).execute()
@@ -110,7 +121,7 @@ class CalendarClient:
         """Move a CADEN-owned event to a new time window."""
         try:
             self.service.events().patch(
-                calendarId=self.calendar_id,
+                calendarId=self.writable_calendar_id,
                 eventId=event_id,
                 body={
                     "start": {"dateTime": new_start.astimezone(timezone.utc).isoformat()},

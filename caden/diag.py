@@ -19,8 +19,11 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
+import structlog
+
 _LOCK = threading.Lock()
 _PATH: Path | None = None
+logger = structlog.get_logger()
 
 
 def _path() -> Path:
@@ -49,9 +52,12 @@ def log(section: str, body: str) -> None:
             print(line, file=sys.stderr, flush=True)
     except Exception as e:  # diag must never crash the app
         try:
+            logger.error("diag_failed", error=str(e))
             print(f"[diag failed: {e}]", file=sys.stderr, flush=True)
-        except Exception:
-            pass
+        except Exception as nested:
+            # Last-resort stderr write; still never raise from diagnostics.
+            sys.stderr.write(f"[diag failed twice: {nested}]\n")
+            sys.stderr.flush()
 
 
 def path() -> str:

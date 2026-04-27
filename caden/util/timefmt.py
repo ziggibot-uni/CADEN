@@ -28,6 +28,11 @@ ISO / canonical formats so the repair layer can parse them.
 from __future__ import annotations
 
 import re
+from datetime import datetime
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+
+DEFAULT_DISPLAY_TZ = "America/Detroit"
 
 # Pattern walks left-to-right, matching:
 #   (?<!\d)            no digit immediately before  → blocks "1234:56"
@@ -65,3 +70,21 @@ def to_12hr(text: str) -> str:
     if not text:
         return text
     return _TIME_RE.sub(_convert, text)
+
+
+def resolve_display_tz(tz_name: str | None = None) -> ZoneInfo:
+    try:
+        return ZoneInfo(tz_name or DEFAULT_DISPLAY_TZ)
+    except ZoneInfoNotFoundError as e:
+        raise ValueError(f"unknown display timezone: {tz_name!r}") from e
+
+
+def format_display_time(
+    when: datetime,
+    *,
+    tz_name: str | None = None,
+    include_weekday: bool = False,
+) -> str:
+    target = when.astimezone(resolve_display_tz(tz_name))
+    fmt = "%a %-I:%M %p" if include_weekday else "%-I:%M %p"
+    return target.strftime(fmt).lower()

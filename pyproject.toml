@@ -10,6 +10,7 @@ dependencies = [
     "pandas>=2.2",
     "scikit-learn>=1.5",
     "numpy>=1.26",
+    "scipy>=1.13",
     "google-api-python-client>=2.140",
     "google-auth>=2.33",
     "google-auth-oauthlib>=1.2",

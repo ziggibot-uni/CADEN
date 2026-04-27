@@ -12,6 +12,7 @@ from textual.widgets import Button, Input, Label, Static
 from .services import Services
 from ..errors import CadenError
 from .add_task import rewrite_times_local, _fmt_12h_with_date, _parse_local_deadline as _parse_local
+from ..libbie.store import update_task_event_plan
 
 class EditTaskScreen(ModalScreen[bool]):
     BINDINGS = [("escape", "cancel", "Cancel")]
@@ -148,22 +149,14 @@ class EditTaskScreen(ModalScreen[bool]):
                     body=event
                 ).execute()
                 
-                # Update task_events locally to match
-                self.services.conn.execute(
-                    """
-                    UPDATE task_events
-                    SET planned_start=?, planned_end=?
-                    WHERE google_event_id=?
-                    """,
-                    (
-                        start_dt.astimezone(timezone.utc).isoformat(timespec="seconds"),
-                        end_dt.astimezone(timezone.utc).isoformat(timespec="seconds"),
-                        self.g_event_id,
-                    ),
+                update_task_event_plan(
+                    self.services.conn,
+                    google_event_id=self.g_event_id,
+                    planned_start_iso=start_dt.astimezone(timezone.utc).isoformat(timespec="seconds"),
+                    planned_end_iso=end_dt.astimezone(timezone.utc).isoformat(timespec="seconds"),
                 )
-                self.services.conn.commit()
             except Exception as e:
-                raise CadenError(f"Calendar update failed: {e}")
+                raise CadenError(f"Calendar update failed: {e}") from e
         
         if self.g_task_id and self.services.tasks:
             try:

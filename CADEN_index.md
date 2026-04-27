@@ -59,11 +59,15 @@ Each doc carries one of these at the top:
   Implementation Contracts that resolve every concrete dilemma.
   Everything needed to start building the minimum viable CADEN. All
   decisions here are committed. Later docs assume v0 exists.
-- **`CADEN_build_brief.md`** — `locked`. The build agent's manifest.
+- **`CADEN_buildBrief.md`** — `locked`. The build agent's manifest.
   File-by-file shopping list, function signatures, prompt templates,
   test strategy, stop conditions. **If a coding LLM is building v0,
-  it reads this first.** Tightly scoped to v0; explicitly forbids
+  it reads this after `CADEN.md` and `CADEN_v0.md`.** It is subordinate to
+  those priority docs. Tightly scoped to v0; explicitly forbids
   reading post-v0 docs during the v0 build.
+- **`CADEN_gapList.md`** — `draft`. Verified docs-to-code alignment backlog.
+  Records only explicit mismatches between the current documentation contract
+  and the current implementation so alignment work can stay documentation-first.
 
 ### Cross-cutting mechanisms (post-v0)
 - **`CADEN_learning.md`** — `draft`. The learning system beyond v0.
@@ -79,11 +83,13 @@ Each doc carries one of these at the top:
   Libbie's role as the memory substrate. Depends on v0 and learning doc.
 - **`CADEN_dashboard.md`** — `draft`. Dashboard beyond v0. The active
   optimization surface where "balance all three" becomes visible action.
+  This is the continuation of the v0 GUI: when CADEN expands into multiple
+  tabs, the existing v0 interface becomes the tab named `Dashboard`.
   Depends on v0 and learning doc.
-- **`CADEN_project_manager.md`** — `draft`. The Project Manager app.
+- **`CADEN_projectManager.md`** — `draft`. The Project Manager app.
   Multi-step goals, dependencies, progress tracking. Depends on v0 and
   learning doc.
-- **`CADEN_thought_dump.md`** — `draft`. The Thought Dump app. Freeform
+- **`CADEN_thougtDump.md`** — `draft`. The Thought Dump app. Freeform
   capture with eventual structure emerging from retrieval and rating.
   Depends on v0 and learning doc.
 - **`CADEN_sprocket.md`** — `draft`. Sprocket. The vibecoding chat
@@ -92,16 +98,16 @@ Each doc carries one of these at the top:
   strategies produce working code. Python only. Depends on v0,
   learning doc, dashboard doc.
 
-### Cold-start mitigation
-- **`CADEN_intake.md`** — `draft`. One-time first-launch flow where
-  Sean seeds CADEN with self-knowledge notes and trusted Python code
-  patterns. Pure data ingestion, no rules. Skippable. Never re-offered.
-  This is the only concession to cold-start pain — nothing further is
-  added in this direction. Depends on v0, Libbie, learning, Sprocket.
-
 ---
 
 ## Doc Authoring Rules (for LLMs and for Sean)
+
+Priority order for truth:
+- `CADEN.md`
+- `CADEN_v0.md`
+- `CADEN_buildBrief.md`
+- post-v0 planning docs
+- `README.md` and other summaries
 
 1. **Every doc starts with:**
    - Title
@@ -114,11 +120,17 @@ Each doc carries one of these at the top:
    and add both pieces to this index.
 3. **No doc contradicts another.** If you find a contradiction, stop and
    surface it to Sean; do not silently resolve it.
-4. **Deprecated ideas stay in the doc they were proposed in**, under a
+4. **Use the exact filename that exists in the repo when referencing another
+  doc.** Do not normalize casing, underscores, or spelling in prose.
+5. **Summary docs should defer instead of duplicating volatile details.**
+  Filesystem paths, config filenames, concrete thresholds, and other
+  implementation contracts belong in the priority docs unless there is a
+  strong reason to restate them.
+6. **Deprecated ideas stay in the doc they were proposed in**, under a
    "Deprecated Sections" heading, with a one-line reason. Do not delete
    history.
-5. **Open questions are labeled as such** and never presented as answers.
-6. **Planning only.** No code in these docs beyond illustrative snippets.
+7. **Open questions are labeled as such** and never presented as answers.
+8. **Planning only.** No code in these docs beyond illustrative snippets.
    Code lives in the eventual `caden/` package, not the planning docs.
 
 ---

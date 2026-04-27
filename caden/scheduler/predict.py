@@ -12,15 +12,9 @@ from __future__ import annotations
 import sqlite3
 from typing import Callable
 
-from ..config import (
-    BOOTSTRAP_FOCAL_TEXT_TRUNCATE_CHARS,
-    BOOTSTRAP_RETRIEVAL_TOP_K,
-    BOOTSTRAP_RETRIEVAL_TRUNCATE_CHARS,
-    log_bootstrap_use,
-)
 from ..errors import SchedulerError, LLMError, LLMRepairError
 from .. import diag
-from ..libbie import retrieve
+from ..libbie import curate, retrieve
 from ..libbie.store import write_prediction
 from ..llm.client import OllamaClient
 from ..llm.embed import Embedder
@@ -83,34 +77,6 @@ Rules:
   - JSON only, no prose outside the object.
 """
 
-
-def _carries_signal(r: retrieve.RetrievedEvent) -> bool:
-    """Does this neighbour carry signal a prediction can actually use?
-
-    The retrieval mechanism is unchanged; this is a downstream filter on
-    "is there any predictive content here?", not a heuristic about Sean.
-    Spec-aligned reasoning per source:
-
-      - prediction: always carries a duration prediction. Keep.
-      - residual:   always carries observed-vs-predicted signal. Keep.
-      - rating:     keep only if at least one axis is non-null. An all-null
-                    rating is the rater's own self-report of "I don't know";
-                    feeding "I don't know" rows to the predictor adds prompt
-                    weight without adding information.
-      - task:       prior task descriptions can anchor duration estimates by
-                    similarity. Keep.
-      - intake_*:   self-knowledge from Sean. Keep.
-      - sean_chat:  conversational text. Keep — Sean stating "I'm wiped"
-                    near a task is real signal. The retrieval ranker, not
-                    this filter, decides relevance.
-    """
-    src = r.event.source
-    if src == "rating":
-        m = r.event.meta or {}
-        return any(m.get(k) is not None for k in ("mood", "energy", "productivity"))
-    return True
-
-
 def emit_prediction(
     conn: sqlite3.Connection,
     task_id: int,
@@ -127,49 +93,27 @@ def emit_prediction(
     on_content: Callable[[str], None] | None = None,
 ) -> int:
     """Compute and store a prediction bundle. Returns prediction id."""
-    log_bootstrap_use(conn, "BOOTSTRAP_RETRIEVAL_TOP_K", BOOTSTRAP_RETRIEVAL_TOP_K)
-    log_bootstrap_use(
+    _ligand, context, _ranked = retrieve.recall_packets_for_query(
         conn,
-        "BOOTSTRAP_RETRIEVAL_TRUNCATE_CHARS",
-        BOOTSTRAP_RETRIEVAL_TRUNCATE_CHARS,
-    )
-
-    raw_neighbours = retrieve.search(
-        conn,
+        description,
         description_embedding,
-        k=BOOTSTRAP_RETRIEVAL_TOP_K,
         sources=(
             "rating",
             "residual",
             "prediction",
             "sean_chat",
             "task",
-            "intake_self_knowledge",
-            "intake_code_pattern",
         ),
     )
-    neighbours = [r for r in raw_neighbours if _carries_signal(r)]
+    ctx_block = curate.package_recall_context(description, context.recalled_memories)
 
-    trunc = BOOTSTRAP_RETRIEVAL_TRUNCATE_CHARS
-    ctx_lines = [
-        f"- [{r.event.timestamp} / {r.event.source} / dist={r.distance:.3f}] "
-        f"{(r.event.raw_text[:trunc] + '…') if len(r.event.raw_text) > trunc else r.event.raw_text}"
-        for r in neighbours
-    ] or ["(none)"]
-
-    log_bootstrap_use(
-        conn,
-        "BOOTSTRAP_FOCAL_TEXT_TRUNCATE_CHARS",
-        BOOTSTRAP_FOCAL_TEXT_TRUNCATE_CHARS,
-    )
-    focal_cap = BOOTSTRAP_FOCAL_TEXT_TRUNCATE_CHARS
-    desc_block = description if len(description) <= focal_cap else description[:focal_cap] + "…"
+    desc_block = description
 
     user_prompt = (
         f"Task id={task_id}\n"
         f"Description: {desc_block}\n"
         f"Scheduled block: {planned_start_iso} → {planned_end_iso}\n\n"
-        f"Relevant memory:\n" + "\n".join(ctx_lines) + "\n\n"
+        f"Libbie context:\n{ctx_block}\n\n"
         f"Emit a prediction bundle per the system instructions."
     )
 

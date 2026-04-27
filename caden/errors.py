@@ -58,5 +58,25 @@ class GoogleSyncError(CadenError):
     """Google Calendar / Tasks sync problem."""
 
 
+class WebSearchError(CadenError):
+    """SearXNG lookup or web-ingestion problem."""
+
+
 class SchedulerError(CadenError):
     """Scheduling, prediction, or residual computation failed."""
+
+
+class LearningError(CadenError):
+    """Learning diagnostics or adaptation pipeline failed."""
+
+
+class ProjectManagerError(CadenError):
+    """Project Manager subsystem failed."""
+
+
+class SprocketError(CadenError):
+    """Future Sprocket subsystem problem."""
+
+
+class UIError(CadenError):
+    """Future generic UI subsystem problem."""

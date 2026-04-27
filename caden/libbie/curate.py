@@ -26,18 +26,46 @@ import sqlite3
 from datetime import datetime, timedelta
 from typing import Iterable, Sequence
 
-from ..errors import GoogleSyncError, LLMError
+from ..errors import GoogleSyncError, WebSearchError
 from . import retrieve
+from .store import write_event
+
+
+def package_recall_context(
+    task_text: str,
+    recalled_memories: Sequence[retrieve.RecallPacket],
+) -> str:
+    """Return the shared CADEN-facing recalled-memory context block."""
+    memory_lines = [
+        f"- [{packet.relevance}] {packet.summary} ({packet.reason})"
+        for packet in recalled_memories
+    ] or ["(no prior memory yet)"]
+
+    return (
+        "@context {\n"
+        + f"  task: {task_text}\n"
+        + "  recalled_memories:\n"
+        + "\n".join(f"    {line}" for line in memory_lines)
+        + "\n}"
+        + "\n\nPAST — background memory Libbie retrieved. Each entry is a "
+        "snapshot of a moment that has ALREADY HAPPENED. The bracketed "
+        "timestamp is when it happened; compare against 'now:' in the NOW "
+        "block below to see how long ago. Do not treat these as describing "
+        "what is true right now unless NOW confirms it.\n"
+        + "\n".join(memory_lines)
+    )
 
 
 def package_chat_context(
     conn: sqlite3.Connection,
-    query_embedding: Sequence[float],
+    task_text: str,
     sources: Sequence[str],
     *,
+    embedder,
     recent_exchanges: Iterable[tuple[str, str]] = (),
     calendar=None,
     tasks=None,
+    searxng=None,
 ) -> str:
     """Return the fully-formed user-prompt body for a chat reply.
 
@@ -56,30 +84,23 @@ def package_chat_context(
         A single string ready to be concatenated with the trailing
         "Sean just said: …\\n\\nReply." segment by the caller.
 
-    Raises:
-        LLMError: if retrieval returned a non-empty result that is still
-            below ``BOOTSTRAP_RETRIEVAL_MIN_K`` after filtering. Per spec,
-            falling under the floor means the index is too thin and the
-            right answer is to fix retrieval, not silently drop signal.
     """
-    # Let the LLM see up to 15 memories, so it has to grapple with noise and
-    # make bad calls, generating residuals we can learn from. No more
-    # hard minimums.
-    neighbours = retrieve.search(
+    ligand, context, ranked = retrieve.recall_packets_for_task(
         conn,
-        query_embedding,
-        30, # A dynamic cap rather than a rigid bootstrap limit 
-        sources,
+        task_text,
+        embedder,
+        sources=sources,
+        recent_exchanges=tuple(recent_exchanges),
     )
-    
-    # We pass the full retrieved texts rather than rigidly truncating. 
-    # The LLM will see real event sizes (which might be long unless the 
-    # length bias in retrieval pushes shorter lessons to the top).
-    
-    memory_lines: list[str] = [
-        f"- [{r.event.timestamp} / {r.event.source}] {r.event.raw_text}"
-        for r in neighbours
-    ] or ["(no prior memory yet)"]
+    if len(ranked) < 3 and searxng is not None:
+        _ingest_web_knowledge(conn, task_text, ligand.compact_text(), searxng, embedder)
+        ligand, context, ranked = retrieve.recall_packets_for_task(
+            conn,
+            task_text,
+            embedder,
+            sources=sources,
+            recent_exchanges=tuple(recent_exchanges),
+        )
 
     exchanges = list(recent_exchanges)
     thread_lines = []
@@ -91,22 +112,70 @@ def package_chat_context(
         thread_lines.append("")
 
     live_lines = _live_world_lines(calendar, tasks)
+    recall_block = package_recall_context(context.task, context.recalled_memories)
 
     # PAST/NOW/THREAD framing places the live conversation front and center.
     # The current thread is the "spine", not a footnote.
     return (
         "THREAD — the current live conversation. This is what you are responding to right now:\n"
         + ("\n".join(thread_lines) if thread_lines else "(no prior messages in this session yet)\n")
-        + "\n\nPAST — background memory Libbie retrieved. Each entry is a "
-        "snapshot of a moment that has ALREADY HAPPENED. The bracketed "
-        "timestamp is when it happened; compare against 'now:' in the NOW "
-        "block below to see how long ago. Do not treat these as describing "
-        "what is true right now unless NOW confirms it.\n"
-        + "\n".join(memory_lines)
+        + "\n\nLIGAND — Libbie's retrieval steering summary for this turn:\n"
+        + f"domain={ligand.domain}; intent={ligand.intent}; themes={', '.join(ligand.themes) or '(none)'}; risk={', '.join(ligand.risk) or '(none)'}; outcome_focus={ligand.outcome_focus}"
+        + "\n\n"
+        + recall_block
         + "\n\nNOW — Sean's actual current reality, pulled live from his "
         "Google account at the start of this turn:\n"
         + "\n".join(live_lines)
     )
+
+
+def _has_web_knowledge(conn: sqlite3.Connection, query: str) -> bool:
+    row = conn.execute(
+        """
+        SELECT 1
+        FROM events AS e
+        JOIN event_metadata AS m ON m.event_id = e.id
+        WHERE e.source = 'web_knowledge'
+          AND m.key = 'query'
+          AND m.value = ?
+        LIMIT 1
+        """,
+        (query,),
+    ).fetchone()
+    return row is not None
+
+
+def _ingest_web_knowledge(
+    conn: sqlite3.Connection,
+    task_text: str,
+    ligand_text: str,
+    searxng,
+    embedder,
+) -> None:
+    query = " ".join(part for part in [task_text.strip(), ligand_text.strip()] if part).strip()
+    if not query or _has_web_knowledge(conn, query):
+        return
+    hits = searxng.search(query, limit=3)
+    if not hits:
+        raise WebSearchError(f"searxng returned no usable hits for query {query!r}")
+    for hit in hits:
+        raw_text = f"Web knowledge for '{task_text}': {hit.summary_text()}"
+        emb = embedder.embed(raw_text)
+        write_event(
+            conn,
+            source="web_knowledge",
+            raw_text=raw_text,
+            embedding=emb,
+            meta={
+                "query": query,
+                "topic": task_text,
+                "title": hit.title,
+                "url": hit.url,
+                "engine": hit.engine,
+                "trigger": "searxng",
+                "domain": "external_knowledge",
+            },
+        )
 
 
 def _live_world_lines(calendar, tasks) -> list[str]:
@@ -139,7 +208,7 @@ def _live_world_lines(calendar, tasks) -> list[str]:
                 lines.append("- calendar (rest of today): (nothing scheduled)")
             else:
                 lines.append("- calendar (rest of today):")
-                for ev in events[:20]:
+                for ev in events:
                     s = ev.start.astimezone().strftime('%-I:%M %p')
                     e2 = ev.end.astimezone().strftime('%-I:%M %p')
                     lines.append(f"    • {s}–{e2}  {ev.summary}")
@@ -156,7 +225,7 @@ def _live_world_lines(calendar, tasks) -> list[str]:
                 lines.append("- open tasks: (none)")
             else:
                 lines.append("- open tasks:")
-                for t in open_tasks[:20]:
+                for t in open_tasks:
                     due = (
                         t.due.astimezone().strftime('%a %b %-d')
                         if t.due else "no due date"
